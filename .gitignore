@@ -1,4 +1,4 @@
-*.dbesture-venv/
+gesture-venv/
 
 *.db
 *.joblib
