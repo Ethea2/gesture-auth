@@ -1,2 +1,5 @@
-gesture-venv/
+*.dbesture-venv/
 
+*.db
+*.joblib
+__pycache__/
