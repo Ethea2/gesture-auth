@@ -93,29 +93,77 @@ class GestureRecognitionApp:
             hand_results = self.hands.process(frame_rgb)
             pose_results = self.pose.process(frame_rgb)
 
+            hand_landmarks_dict = {}  # Store wrist positions
+
+            # Process hands first
             if hand_results.multi_hand_landmarks:
                 for hand_landmarks in hand_results.multi_hand_landmarks:
                     mp.solutions.drawing_utils.draw_landmarks(
-                        frame_rgb, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
-                    
+                        frame_rgb, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
+                    )
+
+                    # Store wrist positions (index 0 in hand landmarks)
+                    wrist = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
+                    cx, cy = int(wrist.x * frame.shape[1]), int(wrist.y * frame.shape[0])
+
+                    # Determine left or right hand based on wrist position
+                    if wrist.x < 0.5:  # Assuming left wrist is on the left side of the frame
+                        hand_landmarks_dict['right_wrist'] = (cx, cy)
+                    else:
+                        hand_landmarks_dict['left_wrist'] = (cx, cy)
+
+                    # Process for recognition or registration
                     if self.recording:
                         self.process_registration(hand_landmarks)
                     elif hasattr(self, 'recognition_mode') and self.recognition_mode:
                         self.process_recognition(hand_landmarks)
 
             if pose_results.pose_landmarks:
-                mp.solutions.drawing_utils.draw_landmarks(
-                    frame_rgb, pose_results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
-                
-                # Extract shoulder and elbow landmarks
-                left_shoulder = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-                right_shoulder = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-                left_elbow = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
-                right_elbow = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+                important_landmarks = {
+                    'left_shoulder': self.mp_pose.PoseLandmark.LEFT_SHOULDER,
+                    'right_shoulder': self.mp_pose.PoseLandmark.RIGHT_SHOULDER,
+                    'left_elbow': self.mp_pose.PoseLandmark.LEFT_ELBOW,
+                    'right_elbow': self.mp_pose.PoseLandmark.RIGHT_ELBOW,
+                    'left_hip': self.mp_pose.PoseLandmark.LEFT_HIP,
+                    'right_hip': self.mp_pose.PoseLandmark.RIGHT_HIP
+                }
 
-                # You can process these landmarks as needed
-                # For example, you could add them to the features for recognition
+                landmark_points = {}
+                for name, landmark_id in important_landmarks.items():
+                    landmark = pose_results.pose_landmarks.landmark[landmark_id]
+                    cx, cy = int(landmark.x * frame.shape[1]), int(landmark.y * frame.shape[0])
+                    landmark_points[name] = (cx, cy)
+                    cv2.circle(frame_rgb, (cx, cy), 5, (0, 0, 255), -1)  # Blue circles for joints
 
+                # Pose connections
+                pose_connections = [
+                    ('left_shoulder', 'right_shoulder'),
+                    ('left_shoulder', 'left_elbow'),
+                    ('right_shoulder', 'right_elbow'),
+                    ('left_hip', 'left_shoulder'),
+                    ('right_hip', 'right_shoulder'),
+                    ('left_hip', 'right_hip')
+                ]
+
+                # Draw pose connections
+                for p1, p2 in pose_connections:
+                    if p1 in landmark_points and p2 in landmark_points:
+                        cv2.line(frame_rgb, landmark_points[p1], landmark_points[p2], (255, 255, 255), 2)  # White lines
+
+                # Connect elbows to correct wrists
+                if 'left_elbow' in landmark_points and 'left_wrist' in hand_landmarks_dict:
+                    cv2.line(frame_rgb, landmark_points['left_elbow'], hand_landmarks_dict['left_wrist'], (255, 255, 255), 2)
+                if 'right_elbow' in landmark_points and 'right_wrist' in hand_landmarks_dict:
+                    cv2.line(frame_rgb, landmark_points['right_elbow'], hand_landmarks_dict['right_wrist'], (255, 255, 255), 2)
+
+                # Process registration and recognition using upper body landmarks only
+                upper_body_landmarks = [pose_results.pose_landmarks.landmark[l] for l in important_landmarks.values()]
+                if self.recording:
+                    self.process_registration(upper_body_landmarks)
+                elif hasattr(self, 'recognition_mode') and self.recognition_mode:
+                    self.process_recognition(upper_body_landmarks)
+
+            # Convert to Tkinter image
             img = Image.fromarray(frame_rgb)
             imgtk = ImageTk.PhotoImage(image=img)
             self.canvas.imgtk = imgtk
@@ -136,6 +184,9 @@ class GestureRecognitionApp:
                 )
 
         self.root.after(10, self.update_video_feed)
+
+
+
 
     def setup_gui(self):
         self.canvas = tk.Canvas(self.root, width=640, height=480)
