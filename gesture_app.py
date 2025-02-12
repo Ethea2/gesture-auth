@@ -31,31 +31,50 @@ class GestureRecognitionApp:
 
     def extract_features(self, landmarks):
         features = []
-        for landmark in landmarks.landmark:
+        for landmark in landmarks:
             features.extend([landmark.x, landmark.y, landmark.z])
         return np.array(features)
+
+    def combine_landmarks(self, hand_landmarks, pose_landmarks):
+        combined_landmarks = []
+        if hand_landmarks:
+            for hand in hand_landmarks:
+                combined_landmarks.extend(hand.landmark)
+        if pose_landmarks:
+            combined_landmarks.extend(pose_landmarks.landmark)
+        return combined_landmarks
 
     def register_user(self):
         if not self.recording:
             self.username = simpledialog.askstring("Input", "Enter username:")
             if self.username:
                 self.recording = True
-                self.samples_count = 0
+                self.samples_count = 0  # Track repetitions (0 to 5)
                 self.current_samples = []
+                self.repetition_timer = time.time()  # Timer for tracking each repetition window
+                self.status_label.config(text="Perform the gesture for 3 seconds...")
 
     def process_registration(self, landmarks):
         current_time = time.time()
         
-        if self.recording and self.samples_count < 5 and (current_time - self.last_sample_time > self.sample_delay):
-            self.last_sample_time = current_time              
-            features = self.extract_features(landmarks)
-            self.current_samples.append(features)
-            self.samples_count += 1
-            
-            if self.samples_count >= 5:
-                self.save_user_data()
-                self.recording = False
-                messagebox.showinfo("Registration", "Registration complete!")
+        if self.recording and self.samples_count < 5:
+            elapsed_time = current_time - self.repetition_timer
+
+            if elapsed_time < 3:  # Still within 3-second window
+                features = self.extract_features(landmarks)
+                self.current_samples.append(features)
+
+            elif elapsed_time >= 3:  # End of current repetition window
+                self.samples_count += 1  # Move to the next repetition
+                self.repetition_timer = time.time()  # Reset timer for next repetition
+                
+                if self.samples_count < 5:
+                    self.status_label.config(text=f"Repetition {self.samples_count+1}/5: Perform the gesture again.")
+                else:
+                    self.save_user_data()
+                    self.recording = False
+                    self.status_label.config(text="Registration Complete!")
+                    messagebox.showinfo("Registration", "Registration complete!")
 
     def save_user_data(self):
         cursor = self.conn.cursor()
@@ -112,12 +131,6 @@ class GestureRecognitionApp:
                     else:
                         hand_landmarks_dict['left_wrist'] = (cx, cy)
 
-                    # Process for recognition or registration
-                    if self.recording:
-                        self.process_registration(hand_landmarks)
-                    elif hasattr(self, 'recognition_mode') and self.recognition_mode:
-                        self.process_recognition(hand_landmarks)
-
             if pose_results.pose_landmarks:
                 important_landmarks = {
                     'left_shoulder': self.mp_pose.PoseLandmark.LEFT_SHOULDER,
@@ -156,12 +169,14 @@ class GestureRecognitionApp:
                 if 'right_elbow' in landmark_points and 'right_wrist' in hand_landmarks_dict:
                     cv2.line(frame_rgb, landmark_points['right_elbow'], hand_landmarks_dict['right_wrist'], (255, 255, 255), 2)
 
-                # Process registration and recognition using upper body landmarks only
-                upper_body_landmarks = [pose_results.pose_landmarks.landmark[l] for l in important_landmarks.values()]
-                if self.recording:
-                    self.process_registration(upper_body_landmarks)
-                elif hasattr(self, 'recognition_mode') and self.recognition_mode:
-                    self.process_recognition(upper_body_landmarks)
+            # Combine landmarks from hands and pose
+            combined_landmarks = self.combine_landmarks(hand_results.multi_hand_landmarks, pose_results.pose_landmarks)
+
+            # Process registration and recognition using combined landmarks
+            if self.recording:
+                self.process_registration(combined_landmarks)
+            elif hasattr(self, 'recognition_mode') and self.recognition_mode:
+                self.process_recognition(combined_landmarks)
 
             # Convert to Tkinter image
             img = Image.fromarray(frame_rgb)
@@ -184,9 +199,6 @@ class GestureRecognitionApp:
                 )
 
         self.root.after(10, self.update_video_feed)
-
-
-
 
     def setup_gui(self):
         self.canvas = tk.Canvas(self.root, width=640, height=480)
