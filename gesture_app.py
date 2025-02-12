@@ -12,7 +12,7 @@ import time
 class GestureRecognitionApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Hand Gesture Recognition")
+        self.root.title("Upper Body Gesture Recognition")
         self.samples_count = 0
         self.recording = False
         self.current_samples = []
@@ -90,10 +90,11 @@ class GestureRecognitionApp:
         ret, frame = self.cap.read()
         if ret:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self.hands.process(frame_rgb)
+            hand_results = self.hands.process(frame_rgb)
+            pose_results = self.pose.process(frame_rgb)
 
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
+            if hand_results.multi_hand_landmarks:
+                for hand_landmarks in hand_results.multi_hand_landmarks:
                     mp.solutions.drawing_utils.draw_landmarks(
                         frame_rgb, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                     
@@ -101,6 +102,19 @@ class GestureRecognitionApp:
                         self.process_registration(hand_landmarks)
                     elif hasattr(self, 'recognition_mode') and self.recognition_mode:
                         self.process_recognition(hand_landmarks)
+
+            if pose_results.pose_landmarks:
+                mp.solutions.drawing_utils.draw_landmarks(
+                    frame_rgb, pose_results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
+                
+                # Extract shoulder and elbow landmarks
+                left_shoulder = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+                right_shoulder = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+                left_elbow = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
+                right_elbow = pose_results.pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+
+                # You can process these landmarks as needed
+                # For example, you could add them to the features for recognition
 
             img = Image.fromarray(frame_rgb)
             imgtk = ImageTk.PhotoImage(image=img)
@@ -140,6 +154,8 @@ class GestureRecognitionApp:
         self.cap = cv2.VideoCapture(0)
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands()
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose()
 
         if not self.cap.isOpened():
             messagebox.showerror("Error", "Cannot access camera")
