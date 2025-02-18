@@ -193,7 +193,7 @@ class GestureRecognitionApp:
                 )
                 self.canvas.create_text(
                     320, 460,
-                    text="Please perform the gesture a couple of times within 5 seconds. Starting recording...",
+                    text="Please perform the gesture a couple of times within 3 seconds. Starting recording...",
                     fill="red",
                     font=("Arial", 20)
                 )
