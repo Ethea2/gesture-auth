@@ -98,8 +98,9 @@ class GestureRecognitionApp:
         user_id = cursor.lastrowid
 
         for sample in self.current_samples:
+            # Removing the timestamp field from the insert statement
             cursor.execute(
-                "INSERT INTO gesture_samples (user_id, feature_data, timestamp) VALUES (?, ?, CURRENT_TIMESTAMP)", 
+                "INSERT INTO gesture_samples (user_id, feature_data) VALUES (?, ?)", 
                 (user_id, sample.tobytes())
             )
 
@@ -117,17 +118,48 @@ class GestureRecognitionApp:
         )
         data = cursor.fetchall()
 
-        if len(set(sample[0] for sample in data)) < 2:
+        if not data:
+            print("No training data available")
+            return
+            
+        # Make sure we have at least one user with samples
+        if len(data) < 5:
+            print("Not enough samples to train model effectively")
             return
 
-        X = [np.frombuffer(sample[1], dtype=np.float32) for sample in data]
-        y = [sample[0] for sample in data]
-
+        X = []
+        y = []
+        
+        # Process each sample
+        for sample in data:
+            user_id, feature_data = sample
+            try:
+                features = np.frombuffer(feature_data, dtype=np.float32)
+                if len(features) > 0:  # Make sure we have valid features
+                    X.append(features)
+                    y.append(user_id)
+            except Exception as e:
+                print(f"Error processing sample: {e}")
+        
+        if len(X) == 0 or len(set(y)) < 1:
+            print("Not enough valid samples to train model")
+            return
+            
+        # Normalize the feature length
         feature_length = max(len(features) for features in X)
-        X = [np.pad(features, (0, feature_length - len(features)), mode='constant') for features in X]
-
-        self.model.fit(X, y)
+        X_padded = [np.pad(features, (0, feature_length - len(features)), mode='constant') for features in X]
+        
+        # Print diagnostics
+        print(f"Training model with {len(X_padded)} samples from {len(set(y))} users")
+        print(f"Feature length: {feature_length}")
+        
+        # Create and train a new model
+        self.model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
+        self.model.fit(X_padded, y)
+        
+        # Save the model
         joblib.dump(self.model, 'gesture_model.joblib')
+        print("Model training complete")
 
     def draw_hand_landmarks(self, frame, hand_landmarks):
         if hand_landmarks:
@@ -200,19 +232,56 @@ class GestureRecognitionApp:
 
     def process_recognition(self, landmarks):
         if self.recognition_mode:
-            features = self.extract_features(landmarks)
             try:
-                feature_length = self.model.n_features_in_
-                features = np.pad(features, (0, feature_length - len(features)), mode='constant')
-                user_id = self.model.predict([features])[0]
-                cursor = self.conn.cursor()
-                cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
-                result = cursor.fetchone()
-                if result:
-                    messagebox.showinfo("Recognition Result", f"Recognized user: {result[0]}")
+                # Get features from current hand position
+                features = self.extract_features(landmarks)
+                
+                # Get expected feature length from model
+                if hasattr(self.model, 'n_features_in_'):
+                    expected_length = self.model.n_features_in_
+                elif hasattr(self.model, 'support_vectors_') and len(self.model.support_vectors_) > 0:
+                    expected_length = len(self.model.support_vectors_[0])
                 else:
-                    messagebox.showerror("Error", "User not found.")
+                    print("Cannot determine expected feature length from model")
+                    messagebox.showerror("Error", "Model not properly trained.")
+                    self.recognition_mode = False
+                    return
+                    
+                # Pad or truncate features to match expected length
+                if len(features) < expected_length:
+                    features = np.pad(features, (0, expected_length - len(features)), mode='constant')
+                elif len(features) > expected_length:
+                    features = features[:expected_length]
+                    
+                # Make prediction
+                user_id = int(self.model.predict([features])[0])  # Convert to int to avoid array issues
+                
+                # Get prediction confidence if possible
+                try:
+                    decision_values = self.model.decision_function([features])
+                    confidence = np.max(np.abs(decision_values))
+                    print(f"Recognition confidence: {confidence}")
+                except:
+                    confidence = 1.0  # Default if we can't get confidence
+                    
+                # Set confidence threshold
+                threshold = 0.5  # Adjust based on testing
+                
+                if confidence >= threshold:
+                    cursor = self.conn.cursor()
+                    cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
+                    result = cursor.fetchone()
+                    if result:
+                        messagebox.showinfo("Recognition Result", f"Recognized user: {result[0]}")
+                    else:
+                        messagebox.showerror("Error", f"User not found (ID: {user_id}).")
+                else:
+                    messagebox.showinfo("Recognition Result", "Gesture not recognized with sufficient confidence.")
+                    
             except Exception as e:
+                import traceback
+                traceback.print_exc()  # Print the full traceback for debugging
+                print(f"Recognition error: {str(e)}")
                 messagebox.showerror("Error", f"Could not recognize gesture. Error: {str(e)}")
             finally:
                 self.recognition_mode = False
