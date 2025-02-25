@@ -15,8 +15,12 @@ def init_db():
             sample_id INTEGER PRIMARY KEY,
             user_id INTEGER,
             feature_data BLOB,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
+    ''')
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_user_id ON gesture_samples (user_id)
     ''')
     conn.commit()
     return conn
