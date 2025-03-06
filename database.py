@@ -20,6 +20,16 @@ def init_db():
         )
     ''')
     c.execute('''
+        CREATE TABLE IF NOT EXISTS access_logs (
+            log_id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            username TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            confidence REAL,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    c.execute('''
         CREATE INDEX IF NOT EXISTS idx_user_id ON gesture_samples (user_id)
     ''')
     conn.commit()

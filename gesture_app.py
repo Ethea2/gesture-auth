@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox, simpledialog
+import tkinter.ttk as ttk
 import cv2
 import mediapipe as mp
 from PIL import Image, ImageTk
@@ -29,6 +30,7 @@ class GestureRecognitionApp:
         self.countdown_seconds = 5  # 5 seconds per repetition
         self.min_samples_per_user = 15  # Minimum samples required per user
         self.confidence_threshold = 0.7  # Adjust based on testing
+        self.access_logs = [] # to store the motherfucking access logs
 
         try:
             self.model = joblib.load('gesture_model.joblib')
@@ -375,12 +377,29 @@ class GestureRecognitionApp:
                 
                 print(f"Recognition confidence: {confidence:.4f}, threshold: {self.confidence_threshold}")
                     
+                # if confidence >= self.confidence_threshold:
+                #     cursor = self.conn.cursor()
+                #     cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
+                #     result = cursor.fetchone()
+                #     if result:
+                #         messagebox.showinfo("Recognition Result", f"Recognized user: {result[0]}\nConfidence: {confidence:.2f}")
+                #     else:
+                #         messagebox.showerror("Error", f"User not found (ID: {user_id}).")
+                # else:
+                #     messagebox.showinfo("Recognition Result", f"Gesture not recognized with sufficient confidence. (Score: {confidence:.2f})")
                 if confidence >= self.confidence_threshold:
                     cursor = self.conn.cursor()
                     cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
                     result = cursor.fetchone()
                     if result:
-                        messagebox.showinfo("Recognition Result", f"Recognized user: {result[0]}\nConfidence: {confidence:.2f}")
+                        username = result[0]
+                        # Log the successful access
+                        cursor.execute(
+                            "INSERT INTO access_logs (user_id, username, confidence) VALUES (?, ?, ?)",
+                            (user_id, username, confidence)
+                        )
+                        self.conn.commit()
+                        messagebox.showinfo("Recognition Result", f"Recognized user: {username}\nConfidence: {confidence:.2f}")
                     else:
                         messagebox.showerror("Error", f"User not found (ID: {user_id}).")
                 else:
@@ -416,6 +435,11 @@ class GestureRecognitionApp:
         self.settings_button = tk.Button(button_frame, text="Settings", command=self.open_settings,
                                          font=("Arial", 12), bg="#FF9800", fg="white", padx=20)
         self.settings_button.pack(side=tk.LEFT, padx=10)
+
+#access logger button
+        self.logger_button = tk.Button(button_frame, text="Access Logger", command=self.open_access_logger,
+                                   font=("Arial", 12), bg="#9C27B0", fg="white", padx=20)
+        self.logger_button.pack(side=tk.LEFT, padx=10)
                 
     def setup_camera(self):
         self.cap = cv2.VideoCapture(0)
@@ -480,3 +504,159 @@ class GestureRecognitionApp:
             
         tk.Button(settings_window, text="Save", command=save_settings, 
                 font=("Arial", 12), bg="#4CAF50", fg="white", padx=20).pack(pady=20)
+        
+    # Add the new method for the access logger window
+    def open_access_logger(self):
+        """Open access logger window to display recognition history"""
+        logger_window = tk.Toplevel(self.root)
+        logger_window.title("Access Logger")
+        logger_window.geometry("800x500")
+        
+        # Create treeview
+        columns = ("timestamp", "username", "confidence")
+        tree = ttk.Treeview(logger_window, columns=columns, show="headings")  # Changed from tk.ttk.Treeview
+        
+        # Define headings
+        tree.heading("timestamp", text="Timestamp")
+        tree.heading("username", text="Username")
+        tree.heading("confidence", text="Confidence")
+        
+        # Set column widths
+        tree.column("timestamp", width=200)
+        tree.column("username", width=200)
+        tree.column("confidence", width=100)
+        
+        # Add a scrollbar
+        scrollbar = ttk.Scrollbar(logger_window, orient=tk.VERTICAL, command=tree.yview)  # Changed from tk.ttk.Scrollbar
+        tree.configure(yscroll=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+        
+        # Add refresh button
+        def refresh_logs():
+            # Clear existing items
+            for item in tree.get_children():
+                tree.delete(item)
+            
+            # Get logs from database
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT timestamp, username, confidence FROM access_logs ORDER BY timestamp DESC"
+            )
+            logs = cursor.fetchall()
+            
+            # Insert logs into treeview
+            for log in logs:
+                timestamp, username, confidence = log
+                tree.insert("", tk.END, values=(timestamp, username, f"{confidence:.2f}"))
+        
+        # Add filter options
+        filter_frame = tk.Frame(logger_window)
+        filter_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(filter_frame, text="Filter by username:").pack(side=tk.LEFT, padx=5)
+        username_var = tk.StringVar()
+        username_entry = tk.Entry(filter_frame, textvariable=username_var)
+        username_entry.pack(side=tk.LEFT, padx=5)
+        
+        # Date filtering
+        tk.Label(filter_frame, text="Date range:").pack(side=tk.LEFT, padx=5)
+        from_date_var = tk.StringVar()
+        from_date_entry = tk.Entry(filter_frame, textvariable=from_date_var, width=10)
+        from_date_entry.pack(side=tk.LEFT, padx=5)
+        from_date_entry.insert(0, "YYYY-MM-DD")
+        
+        tk.Label(filter_frame, text="to").pack(side=tk.LEFT)
+        to_date_var = tk.StringVar()
+        to_date_entry = tk.Entry(filter_frame, textvariable=to_date_var, width=10)
+        to_date_entry.pack(side=tk.LEFT, padx=5)
+        to_date_entry.insert(0, "YYYY-MM-DD")
+        
+        def apply_filters():
+            # Clear existing items
+            for item in tree.get_children():
+                tree.delete(item)
+            
+            # Construct query with filters
+            query = "SELECT timestamp, username, confidence FROM access_logs WHERE 1=1"
+            params = []
+            
+            if username_var.get():
+                query += " AND username LIKE ?"
+                params.append(f"%{username_var.get()}%")
+            
+            from_date = from_date_var.get()
+            if from_date and from_date != "YYYY-MM-DD":
+                query += " AND date(timestamp) >= ?"
+                params.append(from_date)
+                
+            to_date = to_date_var.get()
+            if to_date and to_date != "YYYY-MM-DD":
+                query += " AND date(timestamp) <= ?"
+                params.append(to_date)
+                
+            query += " ORDER BY timestamp DESC"
+            
+            # Execute query
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            logs = cursor.fetchall()
+            
+            # Insert logs into treeview
+            for log in logs:
+                timestamp, username, confidence = log
+                tree.insert("", tk.END, values=(timestamp, username, f"{confidence:.2f}"))
+        
+        button_frame = tk.Frame(logger_window)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        filter_button = tk.Button(button_frame, text="Apply Filters", command=apply_filters,
+                                bg="#2196F3", fg="white", padx=10)
+        filter_button.pack(side=tk.LEFT, padx=5)
+        
+        refresh_button = tk.Button(button_frame, text="Refresh", command=refresh_logs,
+                                bg="#4CAF50", fg="white", padx=10)
+        refresh_button.pack(side=tk.LEFT, padx=5)
+        
+        export_button = tk.Button(button_frame, text="Export to CSV", 
+                                command=lambda: self.export_logs_to_csv(),
+                                bg="#FF9800", fg="white", padx=10)
+        export_button.pack(side=tk.LEFT, padx=5)
+        
+        # Load logs initially
+        refresh_logs()
+
+        def export_logs_to_csv(self):
+            """Export access logs to a CSV file"""
+            import csv
+            from tkinter import filedialog
+            import datetime
+            
+            # Ask for file location
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                initialfile=f"access_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            )
+            
+            if not filename:
+                return
+            
+            # Get logs from database
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT timestamp, username, confidence FROM access_logs ORDER BY timestamp DESC"
+            )
+            logs = cursor.fetchall()
+            
+            # Write to CSV
+            try:
+                with open(filename, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(["Timestamp", "Username", "Confidence"])
+                    for log in logs:
+                        writer.writerow(log)
+                        
+                messagebox.showinfo("Export Successful", f"Logs exported to {filename}")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Error exporting logs: {str(e)}")
