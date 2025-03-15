@@ -146,8 +146,8 @@ class GestureRecognitionApp:
                     self.status_label.config(text=f"Repetition {self.samples_count+1}/5: {self.countdown_seconds} seconds remaining...")
                     self.update_countdown()
                     # Ask the user to vary their gesture slightly
-                    if self.samples_count == 1:
-                        messagebox.showinfo("Vary Gesture", "Please vary your hand position slightly for each repetition to improve recognition.")
+                    # if self.samples_count == 1:
+                    #     messagebox.showinfo("Vary Gesture", "Please vary your hand position slightly for each repetition to improve recognition.")
                 else:
                     if len(self.current_samples) < self.min_samples_per_user:
                         messagebox.showwarning("Warning", f"Only {len(self.current_samples)} samples collected. Registration might not be reliable.")
@@ -211,10 +211,36 @@ class GestureRecognitionApp:
             except Exception as e:
                 print(f"Error processing sample: {e}")
         
-        if len(X) == 0 or len(set(y)) < 1:
+        if len(X) == 0:
             print("Not enough valid samples to train model")
             return
             
+        # Check if we have at least two different classes
+        if len(set(y)) < 2:
+            print("Need at least two different users to train the model")
+            # Save the scaled features but skip training until we have 2+ users
+            # Find the most common feature length
+            feature_lengths = [len(features) for features in X]
+            common_length = max(set(feature_lengths), key=feature_lengths.count)
+            
+            # Pad or truncate features to common length
+            X_processed = []
+            for features in X:
+                if len(features) < common_length:
+                    features = np.pad(features, (0, common_length - len(features)), mode='constant')
+                elif len(features) > common_length:
+                    features = features[:common_length]
+                X_processed.append(features)
+            
+            X_processed = np.array(X_processed)
+            
+            # Scale features
+            self.scaler = StandardScaler()
+            self.scaler.fit(X_processed)
+            joblib.dump(self.scaler, 'feature_scaler.joblib')
+            return
+                
+        # Continue with model training as before
         # Find the most common feature length
         feature_lengths = [len(features) for features in X]
         common_length = max(set(feature_lengths), key=feature_lengths.count)
@@ -334,7 +360,12 @@ class GestureRecognitionApp:
         self.root.after(10, self.update_video_feed)
 
     def process_recognition(self, landmarks):
-        if self.recognition_mode and self.model is not None:
+        if self.recognition_mode:
+            if self.model is None:
+                messagebox.showinfo("Recognition", "Model not yet trained. Please register at least two users first.")
+                self.recognition_mode = False
+                return
+                
             try:
                 # Get features from current hand position
                 features = self.extract_features(landmarks)
@@ -412,6 +443,24 @@ class GestureRecognitionApp:
                 messagebox.showerror("Error", f"Could not recognize gesture. Error: {str(e)}")
             finally:
                 self.recognition_mode = False
+
+    def recognize_gesture(self):
+        if not self.recording:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT COUNT(DISTINCT user_id) FROM users")
+            user_count = cursor.fetchone()[0]
+            
+            if user_count < 2:
+                messagebox.showinfo("Recognition", "Please register at least two different users before recognition.")
+                return
+                
+            if not self.model:
+                messagebox.showerror("Error", "No trained model available. Please register users first.")
+                return
+                
+            messagebox.showinfo("Recognition", "Perform the gesture to authenticate")
+            self.recognition_mode = True
+            self.recognition_timer = None
 
     def setup_gui(self):
         self.canvas = tk.Canvas(self.root, width=640, height=480)
