@@ -483,14 +483,14 @@ class GestureRecognitionApp:
         
         # Confidence threshold setting
         tk.Label(settings_window, text="Confidence Threshold (0.0-1.0):", font=("Arial", 12)).pack(pady=(20, 5))
-        confidence_slider = tk.Scale(settings_window, from_=0.0, to=1.0, resolution=0.05, 
+        confidence_slider = tk.Scale(settings_window, from_=0.0, to=1.0, resolution=0.01, 
                                     orient=tk.HORIZONTAL, length=300)
         confidence_slider.set(self.confidence_threshold)
         confidence_slider.pack()
         
         # Minimum samples setting
         tk.Label(settings_window, text="Minimum Samples per User:", font=("Arial", 12)).pack(pady=(20, 5))
-        samples_slider = tk.Scale(settings_window, from_=5, to=50, resolution=5, 
+        samples_slider = tk.Scale(settings_window, from_=5, to=70, resolution=5, 
                                 orient=tk.HORIZONTAL, length=300)
         samples_slider.set(self.min_samples_per_user)
         samples_slider.pack()
