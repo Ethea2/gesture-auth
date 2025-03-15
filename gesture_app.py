@@ -563,7 +563,7 @@ class GestureRecognitionApp:
         
         # Create treeview
         columns = ("timestamp", "username", "confidence")
-        tree = ttk.Treeview(logger_window, columns=columns, show="headings")  # Changed from tk.ttk.Treeview
+        tree = ttk.Treeview(logger_window, columns=columns, show="headings")
         
         # Define headings
         tree.heading("timestamp", text="Timestamp")
@@ -576,7 +576,7 @@ class GestureRecognitionApp:
         tree.column("confidence", width=100)
         
         # Add a scrollbar
-        scrollbar = ttk.Scrollbar(logger_window, orient=tk.VERTICAL, command=tree.yview)  # Changed from tk.ttk.Scrollbar
+        scrollbar = ttk.Scrollbar(logger_window, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         tree.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
@@ -655,6 +655,10 @@ class GestureRecognitionApp:
             for log in logs:
                 timestamp, username, confidence = log
                 tree.insert("", tk.END, values=(timestamp, username, f"{confidence:.2f}"))
+            
+            # Save the current filter for export
+            self.current_filter_query = query
+            self.current_filter_params = params
         
         button_frame = tk.Frame(logger_window)
         button_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -668,44 +672,54 @@ class GestureRecognitionApp:
         refresh_button.pack(side=tk.LEFT, padx=5)
         
         export_button = tk.Button(button_frame, text="Export to CSV", 
-                                command=lambda: self.export_logs_to_csv(),
+                                command=lambda: self.export_logs_to_csv(query=self.current_filter_query if hasattr(self, 'current_filter_query') else None, 
+                                                                params=self.current_filter_params if hasattr(self, 'current_filter_params') else None),
                                 bg="#FF9800", fg="white", padx=10)
         export_button.pack(side=tk.LEFT, padx=5)
+        
+        # Initialize filter variables
+        self.current_filter_query = None
+        self.current_filter_params = None
         
         # Load logs initially
         refresh_logs()
 
-        def export_logs_to_csv(self):
-            """Export access logs to a CSV file"""
-            import csv
-            from tkinter import filedialog
-            import datetime
-            
-            # Ask for file location
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".csv",
-                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-                initialfile=f"access_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            )
-            
-            if not filename:
-                return
-            
-            # Get logs from database
-            cursor = self.conn.cursor()
+    def export_logs_to_csv(self, query=None, params=None):
+        """Export access logs to a CSV file"""
+        import csv
+        from tkinter import filedialog
+        import datetime
+        
+        # Ask for file location
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=f"access_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+        
+        if not filename:
+            return
+        
+        # Get logs from database using current filter if provided
+        cursor = self.conn.cursor()
+        
+        if query and params:
+            cursor.execute(query, params)
+        else:
             cursor.execute(
                 "SELECT timestamp, username, confidence FROM access_logs ORDER BY timestamp DESC"
             )
-            logs = cursor.fetchall()
-            
-            # Write to CSV
-            try:
-                with open(filename, 'w', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow(["Timestamp", "Username", "Confidence"])
-                    for log in logs:
-                        writer.writerow(log)
-                        
-                messagebox.showinfo("Export Successful", f"Logs exported to {filename}")
-            except Exception as e:
-                messagebox.showerror("Export Error", f"Error exporting logs: {str(e)}")
+        
+        logs = cursor.fetchall()
+        
+        # Write to CSV
+        try:
+            with open(filename, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(["Timestamp", "Username", "Confidence"])
+                for log in logs:
+                    writer.writerow(log)
+                    
+            messagebox.showinfo("Export Successful", f"Logs exported to {filename}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Error exporting logs: {str(e)}")
