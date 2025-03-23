@@ -92,6 +92,8 @@ class GestureRecognitionApp:
                     cos_angle = np.dot(v1, v2) / (v1_norm * v2_norm)
                     angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
                     relative_features.append(angle)
+                else:
+                    relative_features.append(0.0)
                     
             # Add angles between fingers (more view-invariant features)
             for i in range(1, 4):  # First three fingers
@@ -328,6 +330,7 @@ class GestureRecognitionApp:
             X_processed.append(features)
         
         X_processed = np.array(X_processed)
+        X_processed = np.nan_to_num(X_processed, nan=0.0)  # Replace NaN values with 0
         
         # Scale features
         self.scaler = StandardScaler()
@@ -345,8 +348,16 @@ class GestureRecognitionApp:
                 svc_model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
                 rf_model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
                 
-                svc_scores = cross_val_score(svc_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
-                rf_scores = cross_val_score(rf_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
+                if np.isnan(X_scaled).any():
+                    print("Warning: NaN values detected in scaled data. Using only RandomForest.")
+                    rf_scores = cross_val_score(rf_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
+                    print(f"RandomForest cross-validation accuracy: {np.mean(rf_scores):.2f} ± {np.std(rf_scores):.2f}")
+                    self.model = rf_model
+                    model_accuracy = np.mean(rf_scores)
+                else:
+                    # Try both models if no NaN values
+                    svc_scores = cross_val_score(svc_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
+                    rf_scores = cross_val_score(rf_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
                 
                 print(f"SVC cross-validation accuracy: {np.mean(svc_scores):.2f} ± {np.std(svc_scores):.2f}")
                 print(f"RandomForest cross-validation accuracy: {np.mean(rf_scores):.2f} ± {np.std(rf_scores):.2f}")
