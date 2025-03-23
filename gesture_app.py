@@ -11,6 +11,7 @@ from sklearn.model_selection import cross_val_score
 import joblib
 from database import init_db
 import time
+from sklearn.ensemble import RandomForestClassifier
 
 class GestureRecognitionApp:
     def __init__(self):
@@ -51,23 +52,28 @@ class GestureRecognitionApp:
         # Add relative position features (distances between key landmarks)
         relative_features = []
         if len(landmarks) >= 21:  # Full hand landmarks
-            # Compute distances between fingertips and wrist
+            # Compute hand size for normalization
             wrist = landmarks[0]
+            middle_tip = landmarks[12]
+            hand_size = np.sqrt((middle_tip.x - wrist.x)**2 + (middle_tip.y - wrist.y)**2 + (middle_tip.z - wrist.z)**2)
+            hand_size = max(hand_size, 0.001)  # Avoid division by zero
+            
+            # Compute distances between fingertips and wrist
             fingertips = [landmarks[4], landmarks[8], landmarks[12], landmarks[16], landmarks[20]]
             
             for tip in fingertips:
-                # Distance from wrist to fingertip
+                # Distance from wrist to fingertip (normalized by hand size)
                 dist = np.sqrt((tip.x - wrist.x)**2 + (tip.y - wrist.y)**2 + (tip.z - wrist.z)**2)
-                relative_features.append(dist)
+                relative_features.append(dist / hand_size)  # Normalized distance
                 
-            # Distances between adjacent fingertips
+            # Distances between adjacent fingertips (normalized)
             for i in range(len(fingertips)-1):
                 tip1 = fingertips[i]
                 tip2 = fingertips[i+1]
                 dist = np.sqrt((tip1.x - tip2.x)**2 + (tip1.y - tip2.y)**2 + (tip1.z - tip2.z)**2)
-                relative_features.append(dist)
+                relative_features.append(dist / hand_size)  # Normalized distance
             
-            # Compute angles between fingers
+            # Compute angles between fingers (these are naturally scale-invariant)
             for i in range(1, 5):  # For each finger
                 base = landmarks[i*4+1]  # MCP joint
                 mid = landmarks[i*4+2]   # PIP joint
@@ -86,12 +92,64 @@ class GestureRecognitionApp:
                     cos_angle = np.dot(v1, v2) / (v1_norm * v2_norm)
                     angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
                     relative_features.append(angle)
+                    
+            # Add angles between fingers (more view-invariant features)
+            for i in range(1, 4):  # First three fingers
+                # Vector for current finger
+                base_current = landmarks[i*4+1]
+                tip_current = landmarks[i*4+3]
+                v_current = np.array([tip_current.x - base_current.x, 
+                                    tip_current.y - base_current.y,
+                                    tip_current.z - base_current.z])
+                
+                # Vector for next finger
+                base_next = landmarks[(i+1)*4+1]
+                tip_next = landmarks[(i+1)*4+3]
+                v_next = np.array([tip_next.x - base_next.x,
+                                tip_next.y - base_next.y,
+                                tip_next.z - base_next.z])
+                
+                # Calculate angle between fingers
+                v_current_norm = np.linalg.norm(v_current)
+                v_next_norm = np.linalg.norm(v_next)
+                
+                if v_current_norm > 0 and v_next_norm > 0:
+                    cos_angle = np.dot(v_current, v_next) / (v_current_norm * v_next_norm)
+                    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+                    relative_features.append(angle)
         
         # Combine all features
         all_features = np.concatenate([np.array(basic_features, dtype=np.float32), 
-                                      np.array(relative_features, dtype=np.float32)])
+                                    np.array(relative_features, dtype=np.float32)])
         
         return all_features
+    
+    def augment_samples(self, features):
+        """Create slightly modified versions of samples to improve robustness"""
+        augmented_samples = []
+        augmented_samples.append(features)  # Original sample
+        
+        # Add small random noise to features
+        noise_scale = 0.01
+        noisy = features + np.random.normal(0, noise_scale, len(features))
+        augmented_samples.append(noisy)
+        
+        # Scale features slightly
+        scale_factor = np.random.uniform(0.95, 1.05, len(features))
+        scaled = features * scale_factor
+        augmented_samples.append(scaled)
+        
+        # Add small rotational variation (for angle features)
+        # Only modify the angle features which are in the latter part of the feature vector
+        if len(features) > 63:  # Assuming the first 63 features are position-based
+            rotated = features.copy()
+            angle_indices = range(63, len(features))
+            for idx in angle_indices:
+                if idx < len(features):
+                    rotated[idx] = features[idx] + np.random.normal(0, 0.05)
+            augmented_samples.append(rotated)
+        
+        return augmented_samples
 
     def combine_landmarks(self, hand_landmarks):
         combined_landmarks = []
@@ -104,6 +162,14 @@ class GestureRecognitionApp:
         if not self.recording:
             self.username = simpledialog.askstring("Input", "Enter username:")
             if self.username:
+                # Show instructions before recording starts
+                messagebox.showinfo("Registration Instructions", 
+                                "For best recognition results:\n\n" +
+                                "1. Vary your hand position slightly for each repetition\n" +
+                                "2. Change the distance from the camera\n" +
+                                "3. Rotate your hand subtly between repetitions\n" +
+                                "4. Maintain the core gesture shape")
+                
                 self.recording = True
                 self.samples_count = 0 
                 self.current_samples = []
@@ -131,7 +197,15 @@ class GestureRecognitionApp:
             # Collect multiple samples during each repetition window
             if elapsed_time < 5 and time.time() - self.last_sample_time > 0.2:  # Collect a sample every 0.2 seconds
                 features = self.extract_features(landmarks)
+                
+                # Add original sample
                 self.current_samples.append(features)
+                
+                # Add augmented samples
+                augmented = self.augment_samples(features)
+                for aug_sample in augmented[1:]:  # Skip the first one as it's the original
+                    self.current_samples.append(aug_sample)
+                    
                 self.last_sample_time = time.time()
                 # Display sample count
                 samples_in_current_repetition = len([s for s in self.current_samples if len(s) > 0])
@@ -146,8 +220,8 @@ class GestureRecognitionApp:
                     self.status_label.config(text=f"Repetition {self.samples_count+1}/5: {self.countdown_seconds} seconds remaining...")
                     self.update_countdown()
                     # Ask the user to vary their gesture slightly
-                    # if self.samples_count == 1:
-                    #     messagebox.showinfo("Vary Gesture", "Please vary your hand position slightly for each repetition to improve recognition.")
+                    if self.samples_count == 1:
+                        messagebox.showinfo("Vary Gesture", "Please vary your hand position, angle, and distance from camera for each repetition to improve recognition.")
                 else:
                     if len(self.current_samples) < self.min_samples_per_user:
                         messagebox.showwarning("Warning", f"Only {len(self.current_samples)} samples collected. Registration might not be reliable.")
@@ -156,7 +230,6 @@ class GestureRecognitionApp:
                     self.recording = False
                     self.status_label.config(text="Registration Complete!")
                     messagebox.showinfo("Registration", f"Registration complete with {len(self.current_samples)} samples!")
-
     def save_user_data(self):
         cursor = self.conn.cursor()
         cursor.execute("INSERT INTO users (username) VALUES (?)", (self.username,))
@@ -265,20 +338,46 @@ class GestureRecognitionApp:
         print(f"Feature length: {common_length}")
         
         # Evaluate model with cross-validation 
-        model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
-        if len(set(y)) > 1 and len(X_scaled) >= 10:  # Only do cross-validation if we have enough data
+        # model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
+        if len(set(y)) > 1 and len(X_scaled) >= 10:
             try:
-                scores = cross_val_score(model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
-                print(f"Cross-validation accuracy: {np.mean(scores):.2f} ± {np.std(scores):.2f}")
+                # Use both SVC and RandomForest for comparison
+                svc_model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
+                rf_model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
                 
-                if np.mean(scores) < 0.7:
+                svc_scores = cross_val_score(svc_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
+                rf_scores = cross_val_score(rf_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
+                
+                print(f"SVC cross-validation accuracy: {np.mean(svc_scores):.2f} ± {np.std(svc_scores):.2f}")
+                print(f"RandomForest cross-validation accuracy: {np.mean(rf_scores):.2f} ± {np.std(rf_scores):.2f}")
+                
+                # Choose the better model
+                if np.mean(rf_scores) > np.mean(svc_scores):
+                    self.model = rf_model
+                    print("Using RandomForest classifier based on cross-validation")
+                    model_accuracy = np.mean(rf_scores)
+                else:
+                    self.model = svc_model
+                    print("Using SVC classifier based on cross-validation")
+                    model_accuracy = np.mean(svc_scores)
+                    
+                # Set confidence threshold based on model accuracy
+                self.confidence_threshold = min(0.9, max(0.6, 1.0 - 1.5 * (1.0 - model_accuracy)))
+                print(f"Setting confidence threshold to {self.confidence_threshold:.2f}")
+                
+                if model_accuracy < 0.7:
                     print("Warning: Model accuracy is low. Consider collecting more varied samples.")
                     messagebox.showwarning("Warning", "Recognition accuracy may be low. Try adding more varied samples for each gesture.")
+                    
             except Exception as e:
                 print(f"Cross-validation error: {e}")
+                # Fallback to RandomForest if cross-validation fails
+                self.model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
+        else:
+            # If not enough data for cross-validation, use RandomForest as default
+            self.model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
         
-        # Create and train the final model
-        self.model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
+        # Train the model
         self.model.fit(X_scaled, y)
         
         # Save the model and scaler
@@ -367,57 +466,64 @@ class GestureRecognitionApp:
                 return
                 
             try:
+                # Collect multiple samples for improved recognition
+                collected_features = []
+                
                 # Get features from current hand position
                 features = self.extract_features(landmarks)
+                collected_features.append(features)
                 
-                # Process features to match expected format
-                if hasattr(self.model, 'n_features_in_'):
-                    expected_length = self.model.n_features_in_
-                elif hasattr(self.model, 'support_vectors_') and len(self.model.support_vectors_) > 0:
-                    expected_length = len(self.model.support_vectors_[0])
-                else:
-                    print("Cannot determine expected feature length from model")
-                    messagebox.showerror("Error", "Model not properly trained.")
-                    self.recognition_mode = False
-                    return
-                    
-                # Pad or truncate features to match expected length
-                if len(features) < expected_length:
-                    features = np.pad(features, (0, expected_length - len(features)), mode='constant')
-                elif len(features) > expected_length:
-                    features = features[:expected_length]
+                # Process each feature sample
+                predictions = []
+                confidences = []
                 
-                # Scale features
-                features_scaled = self.scaler.transform([features])
+                for features in collected_features:
+                    # Process features to match expected format
+                    if hasattr(self.model, 'n_features_in_'):
+                        expected_length = self.model.n_features_in_
+                    elif hasattr(self.model, 'support_vectors_') and len(self.model.support_vectors_) > 0:
+                        expected_length = len(self.model.support_vectors_[0])
+                    else:
+                        print("Cannot determine expected feature length from model")
+                        messagebox.showerror("Error", "Model not properly trained.")
+                        self.recognition_mode = False
+                        return
+                        
+                    # Pad or truncate features to match expected length
+                    if len(features) < expected_length:
+                        features = np.pad(features, (0, expected_length - len(features)), mode='constant')
+                    elif len(features) > expected_length:
+                        features = features[:expected_length]
                     
-                # Make prediction with probability
-                if hasattr(self.model, 'predict_proba'):
-                    probabilities = self.model.predict_proba(features_scaled)[0]
-                    max_prob = np.max(probabilities)
-                    user_id = int(self.model.classes_[np.argmax(probabilities)])
-                    confidence = max_prob
-                else:
-                    # Fallback if probabilities not available
-                    user_id = int(self.model.predict(features_scaled)[0])
-                    confidence = 1.0
-                    try:
-                        decision_values = self.model.decision_function(features_scaled)
-                        confidence = np.max(np.abs(decision_values)) / 10  # Scale to 0-1 range approximately
-                    except:
-                        pass
+                    # Scale features
+                    features_scaled = self.scaler.transform([features])
+                        
+                    # Make prediction with probability
+                    if hasattr(self.model, 'predict_proba'):
+                        probabilities = self.model.predict_proba(features_scaled)[0]
+                        max_prob = np.max(probabilities)
+                        user_id = int(self.model.classes_[np.argmax(probabilities)])
+                        confidence = max_prob
+                    else:
+                        # Fallback if probabilities not available
+                        user_id = int(self.model.predict(features_scaled)[0])
+                        confidence = 1.0
+                        try:
+                            decision_values = self.model.decision_function(features_scaled)
+                            confidence = np.max(np.abs(decision_values)) / 10  # Scale to 0-1 range approximately
+                        except:
+                            pass
+                    
+                    predictions.append(user_id)
+                    confidences.append(confidence)
+                
+                # Use the prediction with highest confidence
+                best_idx = np.argmax(confidences)
+                user_id = predictions[best_idx]
+                confidence = confidences[best_idx]
                 
                 print(f"Recognition confidence: {confidence:.4f}, threshold: {self.confidence_threshold}")
                     
-                # if confidence >= self.confidence_threshold:
-                #     cursor = self.conn.cursor()
-                #     cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
-                #     result = cursor.fetchone()
-                #     if result:
-                #         messagebox.showinfo("Recognition Result", f"Recognized user: {result[0]}\nConfidence: {confidence:.2f}")
-                #     else:
-                #         messagebox.showerror("Error", f"User not found (ID: {user_id}).")
-                # else:
-                #     messagebox.showinfo("Recognition Result", f"Gesture not recognized with sufficient confidence. (Score: {confidence:.2f})")
                 if confidence >= self.confidence_threshold:
                     cursor = self.conn.cursor()
                     cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
