@@ -338,7 +338,7 @@ class GestureRecognitionApp:
         print(f"Feature length: {common_length}")
         
         # Evaluate model with cross-validation 
-        # model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
+        
         if len(set(y)) > 1 and len(X_scaled) >= 10:
             try:
                 # Use both SVC and RandomForest for comparison
