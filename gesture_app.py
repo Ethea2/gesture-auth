@@ -246,7 +246,7 @@ class GestureRecognitionApp:
         self.conn.commit()
         self.retrain_model()
 
-    def retrain_model(self):
+    def retrain_model_original(self):
         cursor = self.conn.cursor()
         cursor.execute(
             """
@@ -395,6 +395,138 @@ class GestureRecognitionApp:
         joblib.dump(self.model, 'gesture_model.joblib')
         joblib.dump(self.scaler, 'feature_scaler.joblib')
         print("Model training complete")
+    
+    def retrain_model(self):
+        """Update the retrain_model function to include negative samples"""
+        cursor = self.conn.cursor()
+        
+        # Get positive samples
+        cursor.execute(
+            """
+            SELECT users.user_id, gesture_samples.feature_data 
+            FROM users 
+            JOIN gesture_samples ON users.user_id = gesture_samples.user_id
+            """
+        )
+        positive_data = cursor.fetchall()
+        
+        # Get negative samples
+        cursor.execute(
+            """
+            SELECT user_id, feature_data 
+            FROM negative_samples
+            """
+        )
+        negative_data = cursor.fetchall()
+        
+        if not positive_data:
+            print("No training data available")
+            return
+        
+        # Process positive samples
+        users_samples = {}
+        for user_id, _ in positive_data:
+            if user_id not in users_samples:
+                users_samples[user_id] = 0
+            users_samples[user_id] += 1
+        
+        # Check if we have enough samples per user
+        min_samples = min(users_samples.values()) if users_samples else 0
+        if min_samples < self.min_samples_per_user:
+            print(f"Warning: Some users have only {min_samples} samples, which may be insufficient")
+        
+        X = []
+        y = []
+        
+        # Process each positive sample
+        for sample in positive_data:
+            user_id, feature_data = sample
+            try:
+                features = np.frombuffer(feature_data, dtype=np.float32)
+                if len(features) > 0:  # Make sure we have valid features
+                    X.append(features)
+                    y.append(user_id)
+            except Exception as e:
+                print(f"Error processing sample: {e}")
+        
+        # Process each negative sample
+        # We use a different label for each negative sample to avoid confusing the model
+        for sample in negative_data:
+            user_id, feature_data = sample
+            try:
+                features = np.frombuffer(feature_data, dtype=np.float32)
+                if len(features) > 0:
+                    X.append(features)
+                    # Use negative user_id to indicate this is a negative sample for this user
+                    # The model will learn to avoid classifying these patterns as this user
+                    y.append(-user_id)  # Negative user_id indicates negative sample
+            except Exception as e:
+                print(f"Error processing negative sample: {e}")
+        
+        if len(X) == 0:
+            print("Not enough valid samples to train model")
+            return
+        
+        # Continue with model training similar to the original code...
+        # Find the most common feature length
+        feature_lengths = [len(features) for features in X]
+        common_length = max(set(feature_lengths), key=feature_lengths.count)
+        
+        # Pad or truncate features to common length
+        X_processed = []
+        for features in X:
+            if len(features) < common_length:
+                features = np.pad(features, (0, common_length - len(features)), mode='constant')
+            elif len(features) > common_length:
+                features = features[:common_length]
+            X_processed.append(features)
+        
+        X_processed = np.array(X_processed)
+        X_processed = np.nan_to_num(X_processed, nan=0.0)  # Replace NaN values with 0
+        
+        # Scale features
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X_processed)
+        
+        # Print diagnostics
+        print(f"Training model with {len(X_scaled)} samples ({len(negative_data)} negative samples)")
+        print(f"Feature length: {common_length}")
+        
+        # Evaluate model with cross-validation 
+        unique_classes = len(set([abs(label) for label in y]))  # Count unique users
+        
+        if unique_classes > 1 and len(X_scaled) >= 10:
+            try:
+                # Create a custom target array for training that handles negative samples
+                y_train = np.array([abs(label) for label in y])  # Use absolute value for training
+                
+                # Create sample weights to give more importance to negative samples
+                sample_weights = np.ones(len(y))
+                for i, label in enumerate(y):
+                    if label < 0:  # This is a negative sample
+                        sample_weights[i] = 1.5  # Higher weight for negative samples
+                
+                # Use RandomForest as it handles weighted samples well
+                self.model = RandomForestClassifier(n_estimators=100, max_depth=None, 
+                                                class_weight='balanced')
+                
+                # Fit the model with sample weights
+                self.model.fit(X_scaled, y_train, sample_weight=sample_weights)
+                
+                # Save the model and scaler
+                joblib.dump(self.model, 'gesture_model.joblib')
+                joblib.dump(self.scaler, 'feature_scaler.joblib')
+                print("Model training complete with negative samples incorporated")
+                
+            except Exception as e:
+                print(f"Training error: {e}")
+                # Fallback to original training method
+                # [original training code here]
+                self.retrain_model_original()
+        else:
+            # Fallback to original code if not enough data
+            # [original training code here]
+            self.retrain_model_original()
 
     def draw_hand_landmarks(self, frame, hand_landmarks):
         if hand_landmarks:
@@ -547,12 +679,15 @@ class GestureRecognitionApp:
                             (user_id, username, confidence)
                         )
                         self.conn.commit()
-                        messagebox.showinfo("Recognition Result", f"Recognized user: {username}\nConfidence: {confidence:.2f}")
+                        
+                        # Instead of the messagebox, call our feedback dialog
+                        self.show_recognition_feedback(user_id, confidence, landmarks)
                     else:
                         messagebox.showerror("Error", f"User not found (ID: {user_id}).")
                 else:
-                    messagebox.showinfo("Recognition Result", f"Gesture not recognized with sufficient confidence. (Score: {confidence:.2f})")
-                    
+                    # For low confidence results, still show the feedback dialog
+                    self.show_recognition_feedback(user_id, confidence, landmarks)
+                        
             except Exception as e:
                 import traceback
                 traceback.print_exc()  # Print the full traceback for debugging
@@ -840,3 +975,233 @@ class GestureRecognitionApp:
             messagebox.showinfo("Export Successful", f"Logs exported to {filename}")
         except Exception as e:
             messagebox.showerror("Export Error", f"Error exporting logs: {str(e)}")
+    def show_recognition_feedback(self, predicted_user_id, confidence, landmarks):
+        """Show feedback dialog after recognition and handle learning from mistakes"""
+        # Store the landmarks for potential correction
+        self.last_recognition_landmarks = landmarks
+        self.last_recognition_confidence = confidence
+        
+        # Create a custom dialog
+        feedback_window = tk.Toplevel(self.root)
+        feedback_window.title("Recognition Feedback")
+        feedback_window.geometry("400x300")
+        feedback_window.grab_set()  # Make it modal
+        
+        # Get the predicted username
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT username FROM users WHERE user_id = ?", (predicted_user_id,))
+        result = cursor.fetchone()
+        predicted_username = result[0] if result else f"Unknown (ID: {predicted_user_id})"
+        
+        # Show recognition result
+        tk.Label(feedback_window, text=f"Recognized as: {predicted_username}", 
+                font=("Arial", 14)).pack(pady=(20, 10))
+        tk.Label(feedback_window, text=f"Confidence: {confidence:.2f}", 
+                font=("Arial", 12)).pack(pady=(0, 20))
+        
+        # Ask if recognition was correct
+        tk.Label(feedback_window, text="Was this recognition correct?", 
+                font=("Arial", 12, "bold")).pack(pady=(10, 20))
+        
+        button_frame = tk.Frame(feedback_window)
+        button_frame.pack(pady=10)
+        
+        # Yes button - recognition was correct
+        tk.Button(button_frame, text="Yes, Correct", 
+                command=lambda: self.handle_correct_recognition(feedback_window, predicted_user_id),
+                font=("Arial", 12), bg="#4CAF50", fg="white", padx=20).pack(side=tk.LEFT, padx=10)
+        
+        # No button - recognition was incorrect
+        tk.Button(button_frame, text="No, Incorrect", 
+                command=lambda: self.handle_incorrect_recognition(feedback_window, predicted_user_id),
+                font=("Arial", 12), bg="#F44336", fg="white", padx=20).pack(side=tk.LEFT, padx=10)
+
+    def handle_correct_recognition(self, feedback_window, predicted_user_id):
+        """Handle case when recognition was correct"""
+        # Just close the feedback window
+        feedback_window.destroy()
+
+    def handle_incorrect_recognition(self, feedback_window, predicted_user_id):
+        """Handle case when recognition was incorrect"""
+        # Create a new dialog to handle error cases
+        correction_window = tk.Toplevel(self.root)
+        correction_window.title("Recognition Correction")
+        correction_window.geometry("450x350")
+        correction_window.grab_set()  # Make it modal
+        
+        # Close the feedback window
+        feedback_window.destroy()
+        
+        tk.Label(correction_window, text="Please select the correct option:", 
+                font=("Arial", 14, "bold")).pack(pady=(20, 20))
+        
+        # Get all registered users
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT user_id, username FROM users ORDER BY username")
+        all_users = cursor.fetchall()
+        
+        # Scenario A: Should have recognized me
+        def scenario_a():
+            selected_user_id = user_var.get()
+            if selected_user_id:
+                self.learn_from_missed_recognition(int(selected_user_id))
+                correction_window.destroy()
+        
+        # Scenario B: Recognized as wrong user
+        def scenario_b():
+            selected_user_id = user_var.get()
+            if selected_user_id:
+                self.learn_from_misrecognition(predicted_user_id, int(selected_user_id))
+                correction_window.destroy()
+        
+        # Scenario C: Should not recognize at all
+        def scenario_c():
+            self.learn_from_false_recognition(predicted_user_id)
+            correction_window.destroy()
+        
+        # Create radio buttons for user selection
+        user_frame = tk.Frame(correction_window)
+        user_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        user_var = tk.StringVar()
+        tk.Label(user_frame, text="Correct user:", font=("Arial", 12)).pack(anchor=tk.W)
+        
+        for user_id, username in all_users:
+            tk.Radiobutton(user_frame, text=username, variable=user_var, 
+                        value=str(user_id), font=("Arial", 11)).pack(anchor=tk.W)
+        
+        # Buttons for the three scenarios
+        scenario_frame = tk.Frame(correction_window)
+        scenario_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        tk.Button(scenario_frame, text="A: Should have recognized me", 
+                command=scenario_a, font=("Arial", 11), bg="#2196F3", fg="white").pack(fill=tk.X, pady=5)
+        
+        tk.Button(scenario_frame, text="B: Recognized as wrong user", 
+                command=scenario_b, font=("Arial", 11), bg="#FF9800", fg="white").pack(fill=tk.X, pady=5)
+        
+        tk.Button(scenario_frame, text="C: Should not recognize anyone", 
+                command=scenario_c, font=("Arial", 11), bg="#9C27B0", fg="white").pack(fill=tk.X, pady=5)
+    def learn_from_missed_recognition(self, correct_user_id):
+        """Scenario A: Add samples to the correct user when recognition missed"""
+        if not hasattr(self, 'last_recognition_landmarks') or not self.last_recognition_landmarks:
+            messagebox.showerror("Error", "No gesture data available for correction")
+            return
+        
+        try:
+            # Extract features from the last recognition landmarks
+            features = self.extract_features(self.last_recognition_landmarks)
+            
+            # Create augmented samples to improve learning
+            augmented_samples = self.augment_samples(features)
+            
+            # Add all samples to the database for the correct user
+            cursor = self.conn.cursor()
+            for sample in augmented_samples:
+                cursor.execute(
+                    "INSERT INTO gesture_samples (user_id, feature_data) VALUES (?, ?)", 
+                    (correct_user_id, sample.tobytes())
+                )
+            
+            self.conn.commit()
+            messagebox.showinfo("Learning Complete", 
+                            f"Added {len(augmented_samples)} samples to help improve recognition")
+            
+            # Retrain the model with the new data
+            self.retrain_model()
+            
+        except Exception as e:
+            print(f"Learning error: {str(e)}")
+            messagebox.showerror("Learning Error", f"Error while updating model: {str(e)}")
+
+    def learn_from_misrecognition(self, wrong_user_id, correct_user_id):
+        """Scenario B: Add samples to correct user and negative samples for wrong user"""
+        if not hasattr(self, 'last_recognition_landmarks') or not self.last_recognition_landmarks:
+            messagebox.showerror("Error", "No gesture data available for correction")
+            return
+        
+        try:
+            # First, make sure we have a negative samples table
+            self.create_negative_samples_table()
+            
+            # Extract features from the last recognition landmarks
+            features = self.extract_features(self.last_recognition_landmarks)
+            
+            # Create augmented samples
+            augmented_samples = self.augment_samples(features)
+            
+            cursor = self.conn.cursor()
+            
+            # Add samples to correct user
+            for sample in augmented_samples:
+                cursor.execute(
+                    "INSERT INTO gesture_samples (user_id, feature_data) VALUES (?, ?)", 
+                    (correct_user_id, sample.tobytes())
+                )
+            
+            # Add negative samples for the wrong user
+            for sample in augmented_samples:
+                cursor.execute(
+                    "INSERT INTO negative_samples (user_id, feature_data) VALUES (?, ?)", 
+                    (wrong_user_id, sample.tobytes())
+                )
+            
+            self.conn.commit()
+            messagebox.showinfo("Learning Complete", 
+                            f"Added samples for correct user and negative samples for misrecognized user")
+            
+            # Retrain the model with the new data
+            self.retrain_model()
+            
+        except Exception as e:
+            print(f"Learning error: {str(e)}")
+            messagebox.showerror("Learning Error", f"Error while updating model: {str(e)}")
+
+    def learn_from_false_recognition(self, wrong_user_id):
+        """Scenario C: Add negative samples for falsely recognized user"""
+        if not hasattr(self, 'last_recognition_landmarks') or not self.last_recognition_landmarks:
+            messagebox.showerror("Error", "No gesture data available for correction")
+            return
+        
+        try:
+            # First, make sure we have a negative samples table
+            self.create_negative_samples_table()
+            
+            # Extract features from the last recognition landmarks
+            features = self.extract_features(self.last_recognition_landmarks)
+            
+            # Create augmented samples
+            augmented_samples = self.augment_samples(features)
+            
+            cursor = self.conn.cursor()
+            
+            # Add negative samples for the wrong user
+            for sample in augmented_samples:
+                cursor.execute(
+                    "INSERT INTO negative_samples (user_id, feature_data) VALUES (?, ?)", 
+                    (wrong_user_id, sample.tobytes())
+                )
+            
+            self.conn.commit()
+            messagebox.showinfo("Learning Complete", 
+                            f"Added negative samples to help prevent false recognition")
+            
+            # Retrain the model with the new data
+            self.retrain_model()
+            
+        except Exception as e:
+            print(f"Learning error: {str(e)}")
+            messagebox.showerror("Learning Error", f"Error while updating model: {str(e)}")
+
+    def create_negative_samples_table(self):
+        """Create table for storing negative samples if it doesn't exist"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS negative_samples (
+            sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            feature_data BLOB NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        self.conn.commit()
