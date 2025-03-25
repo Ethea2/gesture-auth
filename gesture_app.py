@@ -597,61 +597,62 @@ class GestureRecognitionApp:
 
     def update_video_feed(self):
         try:
-            # Capture frame using picamera2
-            frame = self.picam2.capture_array()
-            
-            # Convert from RGB to BGR for OpenCV processing if needed
-            frame_rgb = frame  # Picamera2 in RGB888 mode already gives RGB format
-            
-            # Process with MediaPipe
-            hand_results = self.hands.process(frame_rgb)
-            
-            # Draw landmarks and process further
-            frame_with_landmarks = self.draw_hand_landmarks(
-                frame_rgb.copy(), 
-                hand_results.multi_hand_landmarks
-            )
-            
-            landmarks = self.combine_landmarks(hand_results.multi_hand_landmarks)
-
-            # Add UI elements based on mode
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            
-            if self.recording:
-                countdown_text = f"Time: {self.countdown_seconds}s"
-                cv2.putText(frame_with_landmarks, countdown_text, (50, 50), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
-                cv2.putText(frame_with_landmarks, f"Repetition: {self.samples_count+1}/5", (50, 100), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
+            if hasattr(self, 'frame_ready') and self.frame_ready:
+                # Read the frame from file
+                frame = cv2.imread(self.current_frame_path)
                 
-                if landmarks:
-                    self.process_registration(landmarks)
-                
-            elif self.recognition_mode:
-                cv2.putText(frame_with_landmarks, "Recognition Mode", (50, 50), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-                
-                if not self.recognition_timer:
-                    self.recognition_timer = time.time()
-                elif time.time() - self.recognition_timer >= 5:
-                    if landmarks:
-                        self.process_recognition(landmarks)
-                    self.recognition_timer = None
-                else:
-                    remaining = 5 - (time.time() - self.recognition_timer)
-                    cv2.putText(frame_with_landmarks, f"Analyzing in {remaining:.1f}s", (50, 100), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
-
-            # Convert to PIL format for Tkinter
-            img = Image.fromarray(frame_with_landmarks)
-            imgtk = ImageTk.PhotoImage(image=img)
-            self.canvas.imgtk = imgtk
-            self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
-
+                if frame is not None:
+                    # Process the frame
+                    frame = cv2.flip(frame, 1)  # Flip horizontally
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # Process with MediaPipe
+                    hand_results = self.hands.process(frame_rgb)
+                    
+                    # Draw landmarks
+                    frame_with_landmarks = self.draw_hand_landmarks(
+                        frame_rgb.copy(), 
+                        hand_results.multi_hand_landmarks
+                    )
+                    
+                    landmarks = self.combine_landmarks(hand_results.multi_hand_landmarks)
+                    
+                    # Add UI elements based on mode
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    
+                    if self.recording:
+                        countdown_text = f"Time: {self.countdown_seconds}s"
+                        cv2.putText(frame_with_landmarks, countdown_text, (50, 50), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                        cv2.putText(frame_with_landmarks, f"Repetition: {self.samples_count+1}/5", (50, 100), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                        
+                        if landmarks:
+                            self.process_registration(landmarks)
+                        
+                    elif self.recognition_mode:
+                        cv2.putText(frame_with_landmarks, "Recognition Mode", (50, 50), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                        
+                        if not self.recognition_timer:
+                            self.recognition_timer = time.time()
+                        elif time.time() - self.recognition_timer >= 5:
+                            if landmarks:
+                                self.process_recognition(landmarks)
+                            self.recognition_timer = None
+                        else:
+                            remaining = 5 - (time.time() - self.recognition_timer)
+                            cv2.putText(frame_with_landmarks, f"Analyzing in {remaining:.1f}s", (50, 100), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                    
+                    # Convert to PIL format for Tkinter
+                    img = Image.fromarray(frame_with_landmarks)
+                    imgtk = ImageTk.PhotoImage(image=img)
+                    self.canvas.imgtk = imgtk
+                    self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
+        
         except Exception as e:
             print(f"Error in update_video_feed: {e}")
-            import traceback
-            traceback.print_exc()
         
         # Schedule next update
         self.root.after(10, self.update_video_feed)
-
+        
     def process_recognition(self, landmarks):
         if self.recognition_mode:
             if self.model is None:
@@ -822,7 +823,7 @@ class GestureRecognitionApp:
         self.logger_button = tk.Button(button_frame, text="Access Logger", command=self.open_access_logger,
                                    font=("Arial", 12), bg="#9C27B0", fg="white", padx=20)
         self.logger_button.pack(side=tk.LEFT, padx=10)
-                
+                    
     def setup_camera(self):
         # Set up MediaPipe components first
         self.mp_hands = mp.solutions.hands
@@ -836,42 +837,42 @@ class GestureRecognitionApp:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         
-        # Use OpenCV with specific V4L2 settings for Raspberry Pi Camera
-        self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        # Create a temporary directory to store frames
+        import tempfile
+        import os
+        import subprocess
+        import threading
         
-        if not self.cap.isOpened():
-            print("First attempt failed, trying different camera index...")
-            # Try a different index
-            self.cap = cv2.VideoCapture(1, cv2.CAP_V4L2)
+        self.frame_dir = tempfile.mkdtemp()
+        self.current_frame_path = os.path.join(self.frame_dir, "current_frame.jpg")
+        self.frame_ready = False
+        self.camera_running = True
         
-        if not self.cap.isOpened():
-            print("Both camera indices failed, trying with GSTREAMER pipeline...")
-            # Try GStreamer pipeline
-            gst_str = (
-                "v4l2src device=/dev/video0 ! "
-                "video/x-raw,width=640,height=480 ! "
-                "videoconvert ! appsink"
-            )
-            self.cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+        # Start a background thread to capture frames
+        def camera_thread():
+            while self.camera_running:
+                try:
+                    # Capture a frame using libcamera-jpeg
+                    subprocess.run([
+                        "libcamera-jpeg", 
+                        "-o", self.current_frame_path,
+                        "--width", "640",
+                        "--height", "480",
+                        "--nopreview"
+                    ], timeout=1)
+                    self.frame_ready = True
+                    time.sleep(0.1)  # Slight delay between captures
+                except Exception as e:
+                    print(f"Error capturing frame: {e}")
+                    time.sleep(0.5)
         
-        if not self.cap.isOpened():
-            messagebox.showerror("Error", "Cannot access camera. Please run 'libcamera-hello' to ensure your camera is working.")
-            self.root.quit()
-            return
+        # Start the camera thread
+        self.camera_thread = threading.Thread(target=camera_thread)
+        self.camera_thread.daemon = True
+        self.camera_thread.start()
         
-        # Set camera properties
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize lag
-        
-        # Test if we can actually get a frame
-        ret, test_frame = self.cap.read()
-        if not ret or test_frame is None:
-            messagebox.showerror("Error", "Camera opened but no frames were captured.")
-            self.root.quit()
-            return
-        
-        print("Camera successfully initialized")
+        # Wait a bit for first frame
+        time.sleep(2)
         
         # Start the video feed
         self.update_video_feed()
@@ -1339,10 +1340,16 @@ class GestureRecognitionApp:
         return pos_dist + 2.0 * angle_dist
     
     def __del__(self):
-    # Clean up resources when app closes
-        if hasattr(self, 'picam2') and self.picam2:
+        # Clean up resources when app closes
+        if hasattr(self, 'camera_running'):
+            self.camera_running = False
+            if hasattr(self, 'camera_thread'):
+                self.camera_thread.join(timeout=1)
+        
+        # Clean up temp directory
+        if hasattr(self, 'frame_dir'):
+            import shutil
             try:
-                self.picam2.stop()
-                print("Camera stopped")
+                shutil.rmtree(self.frame_dir)
             except:
                 pass
