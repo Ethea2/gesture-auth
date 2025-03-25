@@ -654,7 +654,7 @@ class GestureRecognitionApp:
         except Exception as e:
             print(f"Error in update_video_feed: {e}")
         
-    self.root.after(10, self.update_video_feed)
+        self.root.after(10, self.update_video_feed)
     def process_recognition(self, landmarks):
         if self.recognition_mode:
             if self.model is None:
