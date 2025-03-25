@@ -29,8 +29,8 @@ class GestureRecognitionApp:
         self.recognition_mode = False
         self.recognition_timer = None
         self.countdown_seconds = 5  # 5 seconds per repetition
-        self.min_samples_per_user = 15  # Minimum samples required per user
-        self.confidence_threshold = 0.7  # Adjust based on testing
+        self.min_samples_per_user = 70  # Minimum samples required per user
+        self.confidence_threshold = 0.9  # Adjust based on testing
         self.access_logs = [] # to store the motherfucking access logs
 
         try:
@@ -132,25 +132,25 @@ class GestureRecognitionApp:
         augmented_samples = []
         augmented_samples.append(features)  # Original sample
         
-        # Add small random noise to features
-        noise_scale = 0.01
-        noisy = features + np.random.normal(0, noise_scale, len(features))
-        augmented_samples.append(noisy)
+        # Add small random noise to features (graduated levels)
+        for noise_scale in [0.005, 0.01, 0.015]:
+            noisy = features + np.random.normal(0, noise_scale, len(features))
+            augmented_samples.append(noisy)
         
-        # Scale features slightly
-        scale_factor = np.random.uniform(0.95, 1.05, len(features))
-        scaled = features * scale_factor
-        augmented_samples.append(scaled)
+        # Scale features slightly (more variants)
+        for scale in [0.97, 0.99, 1.01, 1.03]:
+            scaled = features * scale
+            augmented_samples.append(scaled)
         
         # Add small rotational variation (for angle features)
-        # Only modify the angle features which are in the latter part of the feature vector
         if len(features) > 63:  # Assuming the first 63 features are position-based
-            rotated = features.copy()
-            angle_indices = range(63, len(features))
-            for idx in angle_indices:
-                if idx < len(features):
-                    rotated[idx] = features[idx] + np.random.normal(0, 0.05)
-            augmented_samples.append(rotated)
+            for angle_noise in [0.03, 0.06]:
+                rotated = features.copy()
+                angle_indices = range(63, len(features))
+                for idx in angle_indices:
+                    if idx < len(features):
+                        rotated[idx] = features[idx] + np.random.normal(0, angle_noise)
+                augmented_samples.append(rotated)
         
         return augmented_samples
 
@@ -452,18 +452,41 @@ class GestureRecognitionApp:
             except Exception as e:
                 print(f"Error processing sample: {e}")
         
-        # Process each negative sample
-        for sample in negative_data:
-            user_id, feature_data = sample
-            try:
-                features = np.frombuffer(feature_data, dtype=np.float32)
-                if len(features) > 0:
-                    X.append(features)
-                    # We use the actual user_id (not negative) but will mark as negative using sample weight
-                    y.append(user_id)  # The user ID this should NOT be recognized as
-                    sample_weights.append(-2.0)  # Negative weight indicates "NOT this class"
-            except Exception as e:
-                print(f"Error processing negative sample: {e}")
+        # Now use negative samples to adjust the model
+        neg_indices = [i for i, w in enumerate(sample_weights) if w < 0]
+        
+        # Clear existing negative examples
+        self.negative_examples = {}
+        
+        # Process negative samples 
+        for idx in neg_indices:
+            user_id = y[idx]
+            features = X_scaled[idx]
+            
+            # Only add to negative examples if not too similar to existing examples
+            if user_id not in self.negative_examples:
+                self.negative_examples[user_id] = []
+                self.negative_examples[user_id].append(features)
+            else:
+                # Check if this sample provides new information
+                is_unique = True
+                for existing_feature in self.negative_examples[user_id]:
+                    similarity = self.calculate_similarity_weight(features, existing_feature)
+                    if similarity < 1.5:  # Very similar to existing negative example
+                        is_unique = False
+                        break
+                
+                # Only add if sufficiently different from existing examples
+                if is_unique:
+                    # Cap the number of negative examples per user to prevent over-suppression
+                    if len(self.negative_examples[user_id]) < 10:  # Limit the number of negatives
+                        self.negative_examples[user_id].append(features)
+                    else:
+                        # Replace the most similar negative example with this one
+                        similarities = [self.calculate_similarity_weight(features, ex) 
+                                    for ex in self.negative_examples[user_id]]
+                        most_similar_idx = np.argmin(similarities)
+                        self.negative_examples[user_id][most_similar_idx] = features
         
         if len(X) == 0:
             print("Not enough valid samples to train model")
@@ -603,13 +626,13 @@ class GestureRecognitionApp:
                 
                 if not self.recognition_timer:
                     self.recognition_timer = time.time()
-                elif time.time() - self.recognition_timer >= 2:  # Reduced from 3 to 2 seconds
+                elif time.time() - self.recognition_timer >= 5:  # 5 seconds
                     if landmarks:
                         self.process_recognition(landmarks)
                     self.recognition_timer = None
                 else:
                     # Show countdown during recognition
-                    remaining = 2 - (time.time() - self.recognition_timer)
+                    remaining = 5 - (time.time() - self.recognition_timer)
                     cv2.putText(frame_with_landmarks, f"Analyzing in {remaining:.1f}s", (50, 100), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
             img = Image.fromarray(frame_with_landmarks)
@@ -678,14 +701,24 @@ class GestureRecognitionApp:
                         except:
                             pass
                     
-                    # Check against negative examples
+                    # Check against negative examples with more nuance
                     if hasattr(self, 'negative_examples') and user_id in self.negative_examples:
                         # If this feature is too similar to a negative example for this user,
-                        # reduce the confidence significantly
+                        # reduce the confidence but with more nuance
+                        similarity_scores = []
                         for neg_example in self.negative_examples[user_id]:
                             similarity = np.linalg.norm(features_scaled - neg_example)
-                            if similarity < 2.0:  # If very similar to negative example
-                                confidence *= 0.5  # Reduce confidence by half
+                            similarity_scores.append(similarity)
+                        
+                        # Only penalize if very similar to the closest negative example
+                        if similarity_scores:
+                            min_similarity = min(similarity_scores)
+                            # Apply a smooth decay instead of hard threshold
+                            if min_similarity < 3.0:  # More forgiving threshold (was 2.0)
+                                # Graduated penalty based on similarity
+                                penalty = max(0.5, min_similarity / 3.0)  # Less aggressive (minimum 0.5 reduction)
+                                confidence *= penalty
+                                print(f"Applied negative sample penalty: {penalty:.2f} (similarity: {min_similarity:.2f})")
                     
                     predictions.append(user_id)
                     confidences.append(confidence)
@@ -1218,13 +1251,19 @@ class GestureRecognitionApp:
             # Extract features from the last recognition landmarks
             features = self.extract_features(self.last_recognition_landmarks)
             
-            # Create augmented samples
-            augmented_samples = self.augment_samples(features)
+            # Create fewer augmented samples for negatives to avoid over-penalization
+            # We'll only use the original sample and one lightly augmented version
+            limited_samples = [features]
+            
+            # Add just one slightly noisy sample (much less variation)
+            noise_scale = 0.005  # Use smaller noise (was 0.01)
+            noisy = features + np.random.normal(0, noise_scale, len(features))
+            limited_samples.append(noisy)
             
             cursor = self.conn.cursor()
             
-            # Add negative samples for the wrong user
-            for sample in augmented_samples:
+            # Add negative samples for the wrong user - only use limited samples
+            for sample in limited_samples:
                 cursor.execute(
                     "INSERT INTO negative_samples (user_id, feature_data) VALUES (?, ?)", 
                     (wrong_user_id, sample.tobytes())
@@ -1232,7 +1271,7 @@ class GestureRecognitionApp:
             
             self.conn.commit()
             messagebox.showinfo("Learning Complete", 
-                            f"Added negative samples to help prevent false recognition")
+                            f"Added {len(limited_samples)} negative samples to help prevent false recognition")
             
             # Retrain the model with the new data
             self.retrain_model()
@@ -1240,3 +1279,22 @@ class GestureRecognitionApp:
         except Exception as e:
             print(f"Learning error: {str(e)}")
             messagebox.showerror("Learning Error", f"Error while updating model: {str(e)}")
+
+    def calculate_similarity_weight(self, feature1, feature2):
+        """Calculate a weighted similarity between two feature vectors
+        giving more weight to angular features which tend to be more discriminative"""
+        
+        # Assume the first 63 features are position-based, the rest are angles
+        if len(feature1) <= 63:
+            return np.linalg.norm(feature1 - feature2)  # Standard Euclidean distance
+            
+        # Split features into position and angle components
+        pos_feat1, angle_feat1 = feature1[:63], feature1[63:]
+        pos_feat2, angle_feat2 = feature2[:63], feature2[63:]
+        
+        # Calculate weighted distance
+        pos_dist = np.linalg.norm(pos_feat1 - pos_feat2)
+        angle_dist = np.linalg.norm(angle_feat1 - angle_feat2)
+        
+        # Weight angles more heavily (they're more important for gesture discrimination)
+        return pos_dist + 2.0 * angle_dist
