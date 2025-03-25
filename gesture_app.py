@@ -824,7 +824,7 @@ class GestureRecognitionApp:
         self.logger_button.pack(side=tk.LEFT, padx=10)
                 
     def setup_camera(self):
-        # Set up MediaPipe components first
+    # Set up MediaPipe components
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -836,42 +836,19 @@ class GestureRecognitionApp:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         
-        # Try using picamera2 without directly importing libcamera
-        try:
-            from picamera2 import Picamera2
-            
-            self.picam2 = Picamera2()
-            camera_config = self.picam2.create_preview_configuration(
-                main={"size": (640, 480)}
-            )
-            self.picam2.configure(camera_config)
-            self.picam2.start()
-            
-            # Wait for camera to warm up
-            time.sleep(2)
-            
-            print("Successfully initialized Picamera2")
-            self.using_picamera2 = True
-            
-        except ImportError as e:
-            print(f"Error importing Picamera2: {e}")
-            # Fall back to OpenCV camera
-            self.cap = cv2.VideoCapture(0)
-            
-            if not self.cap.isOpened():
-                self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-            
-            if not self.cap.isOpened():
-                messagebox.showerror("Error", "Cannot access camera")
-                self.root.quit()
-                return
-
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.using_picamera2 = False
+        # Just use OpenCV with V4L2 backend
+        self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        
+        if not self.cap.isOpened():
+            messagebox.showerror("Error", "Cannot access camera")
+            self.root.quit()
+            return
+        
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         
         # Start the video feed
-        self.root.after(100, self.update_video_feed)
+        self.update_video_feed()
 
     def recognize_gesture(self):
         if not self.recording:
