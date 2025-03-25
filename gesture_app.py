@@ -596,10 +596,22 @@ class GestureRecognitionApp:
         return frame
 
     def update_video_feed(self):
-        ret, frame = self.cap.read()
-        if ret:
-            frame = cv2.flip(frame, 1)
+        try:
+            # Capture frame from appropriate camera
+            if hasattr(self, 'using_picamera2') and self.using_picamera2:
+                frame = self.picam2.capture_array()
+                # Convert from RGB to BGR for OpenCV processing if needed
+                if frame.shape[2] == 3:  # RGB format
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("Failed to grab frame")
+                    self.root.after(10, self.update_video_feed)
+                    return
             
+            # Process the frame as usual
+            frame = cv2.flip(frame, 1)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
             hand_results = self.hands.process(frame_rgb)
@@ -639,9 +651,10 @@ class GestureRecognitionApp:
             imgtk = ImageTk.PhotoImage(image=img)
             self.canvas.imgtk = imgtk
             self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
-
-        self.root.after(10, self.update_video_feed)
-
+        except Exception as e:
+            print(f"Error in update_video_feed: {e}")
+        
+    self.root.after(10, self.update_video_feed)
     def process_recognition(self, landmarks):
         if self.recognition_mode:
             if self.model is None:
@@ -814,8 +827,7 @@ class GestureRecognitionApp:
         self.logger_button.pack(side=tk.LEFT, padx=10)
                 
     def setup_camera(self):
-        self.cap = cv2.VideoCapture(0)
-        
+        # First set up MediaPipe components
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -826,15 +838,45 @@ class GestureRecognitionApp:
         
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
+        
+        # Try to use picamera2 (newer Raspberry Pi OS)
+        try:
+            from picamera2 import Picamera2
+            
+            # Initialize the camera
+            self.picam2 = Picamera2()
+            camera_config = self.picam2.create_preview_configuration(
+                main={"size": (640, 480), "format": "RGB888"}
+            )
+            self.picam2.configure(camera_config)
+            self.picam2.start()
+            
+            # Wait for camera to initialize
+            time.sleep(2)
+            
+            print("Using Picamera2 for Raspberry Pi Camera Module")
+            self.using_picamera2 = True
+            
+        except (ImportError, ModuleNotFoundError):
+            # Fall back to OpenCV's camera
+            print("Picamera2 not available, falling back to OpenCV camera")
+            self.cap = cv2.VideoCapture(0)
+            
+            # Try different options if initial capture fails
+            if not self.cap.isOpened():
+                print("Trying with V4L2 backend...")
+                self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+                
+            if not self.cap.isOpened():
+                messagebox.showerror("Error", "Cannot access camera")
+                self.root.quit()
+                return
 
-        if not self.cap.isOpened():
-            messagebox.showerror("Error", "Cannot access camera")
-            self.root.quit()
-            return
-
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize lag
+            self.using_picamera2 = False
+            
         self.update_video_feed()
 
     def recognize_gesture(self):
