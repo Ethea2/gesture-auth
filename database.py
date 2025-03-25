@@ -20,6 +20,15 @@ def init_db():
         )
     ''')
     c.execute('''
+        CREATE TABLE IF NOT EXISTS negative_samples (
+            sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            feature_data BLOB NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS access_logs (
             log_id INTEGER PRIMARY KEY,
             user_id INTEGER,
@@ -31,6 +40,9 @@ def init_db():
     ''')
     c.execute('''
         CREATE INDEX IF NOT EXISTS idx_user_id ON gesture_samples (user_id)
+    ''')
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_neg_user_id ON negative_samples (user_id)
     ''')
     conn.commit()
     return conn

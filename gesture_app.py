@@ -36,6 +36,7 @@ class GestureRecognitionApp:
         try:
             self.model = joblib.load('gesture_model.joblib')
             self.scaler = joblib.load('feature_scaler.joblib')
+            self.negative_examples = joblib.load('negative_examples.joblib')
         except:
             print("No existing model found, will create a new one")
 
@@ -397,7 +398,7 @@ class GestureRecognitionApp:
         print("Model training complete")
     
     def retrain_model(self):
-        """Update the retrain_model function to include negative samples"""
+        """Update the retrain_model function to properly handle negative samples"""
         cursor = self.conn.cursor()
         
         # Get positive samples
@@ -437,6 +438,7 @@ class GestureRecognitionApp:
         
         X = []
         y = []
+        sample_weights = []
         
         # Process each positive sample
         for sample in positive_data:
@@ -446,20 +448,20 @@ class GestureRecognitionApp:
                 if len(features) > 0:  # Make sure we have valid features
                     X.append(features)
                     y.append(user_id)
+                    sample_weights.append(1.0)  # Normal weight for positive samples
             except Exception as e:
                 print(f"Error processing sample: {e}")
         
         # Process each negative sample
-        # We use a different label for each negative sample to avoid confusing the model
         for sample in negative_data:
             user_id, feature_data = sample
             try:
                 features = np.frombuffer(feature_data, dtype=np.float32)
                 if len(features) > 0:
                     X.append(features)
-                    # Use negative user_id to indicate this is a negative sample for this user
-                    # The model will learn to avoid classifying these patterns as this user
-                    y.append(-user_id)  # Negative user_id indicates negative sample
+                    # We use the actual user_id (not negative) but will mark as negative using sample weight
+                    y.append(user_id)  # The user ID this should NOT be recognized as
+                    sample_weights.append(-2.0)  # Negative weight indicates "NOT this class"
             except Exception as e:
                 print(f"Error processing negative sample: {e}")
         
@@ -467,7 +469,6 @@ class GestureRecognitionApp:
             print("Not enough valid samples to train model")
             return
         
-        # Continue with model training similar to the original code...
         # Find the most common feature length
         feature_lengths = [len(features) for features in X]
         common_length = max(set(feature_lengths), key=feature_lengths.count)
@@ -492,26 +493,45 @@ class GestureRecognitionApp:
         print(f"Training model with {len(X_scaled)} samples ({len(negative_data)} negative samples)")
         print(f"Feature length: {common_length}")
         
-        # Evaluate model with cross-validation 
-        unique_classes = len(set([abs(label) for label in y]))  # Count unique users
+        # Use only features with positive samples for training
+        X_pos = []
+        y_pos = []
+        pos_indices = [i for i, w in enumerate(sample_weights) if w > 0]
         
-        if unique_classes > 1 and len(X_scaled) >= 10:
+        for idx in pos_indices:
+            X_pos.append(X_scaled[idx])
+            y_pos.append(y[idx])
+        
+        # Train on positive samples using RandomForest with class weights
+        if len(set(y_pos)) > 1:
             try:
-                # Create a custom target array for training that handles negative samples
-                y_train = np.array([abs(label) for label in y])  # Use absolute value for training
+                self.model = RandomForestClassifier(n_estimators=150, 
+                                            max_depth=None,
+                                            class_weight='balanced',
+                                            n_jobs=-1)
                 
-                # Create sample weights to give more importance to negative samples
-                sample_weights = np.ones(len(y))
-                for i, label in enumerate(y):
-                    if label < 0:  # This is a negative sample
-                        sample_weights[i] = 1.5  # Higher weight for negative samples
+                # Fit the model with positive samples
+                self.model.fit(np.array(X_pos), np.array(y_pos))
                 
-                # Use RandomForest as it handles weighted samples well
-                self.model = RandomForestClassifier(n_estimators=100, max_depth=None, 
-                                                class_weight='balanced')
+                # Now use negative samples to adjust the model
+                # For each negative sample, we'll adjust the model thresholds
+                neg_indices = [i for i, w in enumerate(sample_weights) if w < 0]
+                for idx in neg_indices:
+                    user_id = y[idx]
+                    features = X_scaled[idx]
+                    
+                    # Store this as a threshold example for this user
+                    # We'll check these during prediction to prevent false positives
+                    if not hasattr(self, 'negative_examples'):
+                        self.negative_examples = {}
+                    
+                    if user_id not in self.negative_examples:
+                        self.negative_examples[user_id] = []
+                    
+                    self.negative_examples[user_id].append(features)
                 
-                # Fit the model with sample weights
-                self.model.fit(X_scaled, y_train, sample_weight=sample_weights)
+                # Save the negative examples alongside the model
+                joblib.dump(self.negative_examples, 'negative_examples.joblib')
                 
                 # Save the model and scaler
                 joblib.dump(self.model, 'gesture_model.joblib')
@@ -521,11 +541,9 @@ class GestureRecognitionApp:
             except Exception as e:
                 print(f"Training error: {e}")
                 # Fallback to original training method
-                # [original training code here]
                 self.retrain_model_original()
         else:
             # Fallback to original code if not enough data
-            # [original training code here]
             self.retrain_model_original()
 
     def draw_hand_landmarks(self, frame, hand_landmarks):
@@ -616,6 +634,9 @@ class GestureRecognitionApp:
                 features = self.extract_features(landmarks)
                 collected_features.append(features)
                 
+                # Store landmarks for potential feedback
+                self.last_recognition_landmarks = landmarks
+                
                 # Process each feature sample
                 predictions = []
                 confidences = []
@@ -657,6 +678,15 @@ class GestureRecognitionApp:
                         except:
                             pass
                     
+                    # Check against negative examples
+                    if hasattr(self, 'negative_examples') and user_id in self.negative_examples:
+                        # If this feature is too similar to a negative example for this user,
+                        # reduce the confidence significantly
+                        for neg_example in self.negative_examples[user_id]:
+                            similarity = np.linalg.norm(features_scaled - neg_example)
+                            if similarity < 2.0:  # If very similar to negative example
+                                confidence *= 0.5  # Reduce confidence by half
+                    
                     predictions.append(user_id)
                     confidences.append(confidence)
                 
@@ -680,13 +710,17 @@ class GestureRecognitionApp:
                         )
                         self.conn.commit()
                         
-                        # Instead of the messagebox, call our feedback dialog
-                        self.show_recognition_feedback(user_id, confidence, landmarks)
+                        messagebox.showinfo("Recognition Successful", 
+                                        f"Welcome, {username}! (Confidence: {confidence:.2f})")
                     else:
                         messagebox.showerror("Error", f"User not found (ID: {user_id}).")
                 else:
-                    # For low confidence results, still show the feedback dialog
-                    self.show_recognition_feedback(user_id, confidence, landmarks)
+                    # Show different feedback for low confidence
+                    messagebox.showinfo("Recognition Failed", 
+                                    f"Confidence too low ({confidence:.2f} < {self.confidence_threshold:.2f})\n\nAccess denied.")
+                    
+                    # Still give option to provide feedback for learning
+                    self.show_recognition_feedback(user_id, confidence, self.last_recognition_landmarks)
                         
             except Exception as e:
                 import traceback
@@ -975,6 +1009,7 @@ class GestureRecognitionApp:
             messagebox.showinfo("Export Successful", f"Logs exported to {filename}")
         except Exception as e:
             messagebox.showerror("Export Error", f"Error exporting logs: {str(e)}")
+
     def show_recognition_feedback(self, predicted_user_id, confidence, landmarks):
         """Show feedback dialog after recognition and handle learning from mistakes"""
         # Store the landmarks for potential correction
@@ -984,7 +1019,7 @@ class GestureRecognitionApp:
         # Create a custom dialog
         feedback_window = tk.Toplevel(self.root)
         feedback_window.title("Recognition Feedback")
-        feedback_window.geometry("400x300")
+        feedback_window.geometry("400x350")
         feedback_window.grab_set()  # Make it modal
         
         # Get the predicted username
@@ -994,9 +1029,18 @@ class GestureRecognitionApp:
         predicted_username = result[0] if result else f"Unknown (ID: {predicted_user_id})"
         
         # Show recognition result
-        tk.Label(feedback_window, text=f"Recognized as: {predicted_username}", 
-                font=("Arial", 14)).pack(pady=(20, 10))
-        tk.Label(feedback_window, text=f"Confidence: {confidence:.2f}", 
+        if confidence >= self.confidence_threshold:
+            result_text = f"Recognized as: {predicted_username}"
+            result_color = "#4CAF50"  # Green
+        else:
+            result_text = f"Below threshold - Suggested: {predicted_username}"
+            result_color = "#FF9800"  # Orange
+        
+        title_label = tk.Label(feedback_window, text=result_text, 
+                            font=("Arial", 14), fg=result_color)
+        title_label.pack(pady=(20, 10))
+        
+        tk.Label(feedback_window, text=f"Confidence: {confidence:.2f} (Threshold: {self.confidence_threshold:.2f})", 
                 font=("Arial", 12)).pack(pady=(0, 20))
         
         # Ask if recognition was correct
@@ -1015,6 +1059,11 @@ class GestureRecognitionApp:
         tk.Button(button_frame, text="No, Incorrect", 
                 command=lambda: self.handle_incorrect_recognition(feedback_window, predicted_user_id),
                 font=("Arial", 12), bg="#F44336", fg="white", padx=20).pack(side=tk.LEFT, padx=10)
+        
+        # Add a skip button
+        tk.Button(feedback_window, text="Skip Feedback", 
+                command=lambda: feedback_window.destroy(),
+                font=("Arial", 10), bg="#9E9E9E", fg="white").pack(pady=(20, 10))
 
     def handle_correct_recognition(self, feedback_window, predicted_user_id):
         """Handle case when recognition was correct"""
@@ -1121,8 +1170,6 @@ class GestureRecognitionApp:
             return
         
         try:
-            # First, make sure we have a negative samples table
-            self.create_negative_samples_table()
             
             # Extract features from the last recognition landmarks
             features = self.extract_features(self.last_recognition_landmarks)
@@ -1164,9 +1211,6 @@ class GestureRecognitionApp:
             return
         
         try:
-            # First, make sure we have a negative samples table
-            self.create_negative_samples_table()
-            
             # Extract features from the last recognition landmarks
             features = self.extract_features(self.last_recognition_landmarks)
             
@@ -1192,16 +1236,3 @@ class GestureRecognitionApp:
         except Exception as e:
             print(f"Learning error: {str(e)}")
             messagebox.showerror("Learning Error", f"Error while updating model: {str(e)}")
-
-    def create_negative_samples_table(self):
-        """Create table for storing negative samples if it doesn't exist"""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS negative_samples (
-            sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            feature_data BLOB NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-        self.conn.commit()
