@@ -824,7 +824,7 @@ class GestureRecognitionApp:
         self.logger_button.pack(side=tk.LEFT, padx=10)
                 
     def setup_camera(self):
-    # Set up MediaPipe components
+        # Set up MediaPipe components first
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -836,42 +836,41 @@ class GestureRecognitionApp:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         
-        # Since libcamera-hello works, use Picamera2 directly
+        # Try using picamera2 without directly importing libcamera
         try:
             from picamera2 import Picamera2
-            from libcamera import Transform
             
-            # Initialize with specific configuration
             self.picam2 = Picamera2()
-            
-            # Configure with more specific options
             camera_config = self.picam2.create_preview_configuration(
-                main={"size": (640, 480), "format": "RGB888"},
-                transform=Transform(hflip=1)  # Pre-flip horizontally
+                main={"size": (640, 480)}
             )
             self.picam2.configure(camera_config)
-            
-            # Start the camera
             self.picam2.start()
             
-            # Wait for camera to initialize fully
+            # Wait for camera to warm up
             time.sleep(2)
             
-            # Test capture to ensure it's working
-            test_frame = self.picam2.capture_array()
-            if test_frame is None or test_frame.size == 0:
-                raise Exception("Camera test capture failed")
-                
             print("Successfully initialized Picamera2")
             self.using_picamera2 = True
             
-        except Exception as e:
-            print(f"Error setting up Picamera2: {e}")
-            messagebox.showerror("Camera Error", f"Could not initialize camera: {str(e)}\n\nMake sure no other programs are using the camera.")
-            self.root.quit()  # Exit if camera can't be initialized
-            return
+        except ImportError as e:
+            print(f"Error importing Picamera2: {e}")
+            # Fall back to OpenCV camera
+            self.cap = cv2.VideoCapture(0)
+            
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            
+            if not self.cap.isOpened():
+                messagebox.showerror("Error", "Cannot access camera")
+                self.root.quit()
+                return
+
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.using_picamera2 = False
         
-        # Start video feed update loop
+        # Start the video feed
         self.root.after(100, self.update_video_feed)
 
     def recognize_gesture(self):
