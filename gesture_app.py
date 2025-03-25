@@ -625,7 +625,7 @@ class GestureRecognitionApp:
                 messagebox.showinfo("Recognition", "Model not yet trained. Please register at least two users first.")
                 self.recognition_mode = False
                 return
-                
+                    
             try:
                 # Collect multiple samples for improved recognition
                 collected_features = []
@@ -697,10 +697,13 @@ class GestureRecognitionApp:
                 
                 print(f"Recognition confidence: {confidence:.4f}, threshold: {self.confidence_threshold}")
                     
+                # Check if confidence exceeds threshold
                 if confidence >= self.confidence_threshold:
+                    # Get username and log the access
                     cursor = self.conn.cursor()
                     cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
                     result = cursor.fetchone()
+                    
                     if result:
                         username = result[0]
                         # Log the successful access
@@ -710,6 +713,7 @@ class GestureRecognitionApp:
                         )
                         self.conn.commit()
                         
+                        # Show success message
                         messagebox.showinfo("Recognition Successful", 
                                         f"Welcome, {username}! (Confidence: {confidence:.2f})")
                     else:
@@ -718,9 +722,9 @@ class GestureRecognitionApp:
                     # Show different feedback for low confidence
                     messagebox.showinfo("Recognition Failed", 
                                     f"Confidence too low ({confidence:.2f} < {self.confidence_threshold:.2f})\n\nAccess denied.")
-                    
-                    # Still give option to provide feedback for learning
-                    self.show_recognition_feedback(user_id, confidence, self.last_recognition_landmarks)
+                
+                # Always show feedback dialog, regardless of confidence level
+                self.show_recognition_feedback(user_id, confidence, self.last_recognition_landmarks)
                         
             except Exception as e:
                 import traceback
