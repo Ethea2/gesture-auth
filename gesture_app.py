@@ -824,7 +824,7 @@ class GestureRecognitionApp:
         self.logger_button.pack(side=tk.LEFT, padx=10)
                 
     def setup_camera(self):
-    # Set up MediaPipe components
+        # Set up MediaPipe components first
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -836,16 +836,42 @@ class GestureRecognitionApp:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         
-        # Just use OpenCV with V4L2 backend
+        # Use OpenCV with specific V4L2 settings for Raspberry Pi Camera
         self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
         
         if not self.cap.isOpened():
-            messagebox.showerror("Error", "Cannot access camera")
+            print("First attempt failed, trying different camera index...")
+            # Try a different index
+            self.cap = cv2.VideoCapture(1, cv2.CAP_V4L2)
+        
+        if not self.cap.isOpened():
+            print("Both camera indices failed, trying with GSTREAMER pipeline...")
+            # Try GStreamer pipeline
+            gst_str = (
+                "v4l2src device=/dev/video0 ! "
+                "video/x-raw,width=640,height=480 ! "
+                "videoconvert ! appsink"
+            )
+            self.cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+        
+        if not self.cap.isOpened():
+            messagebox.showerror("Error", "Cannot access camera. Please run 'libcamera-hello' to ensure your camera is working.")
             self.root.quit()
             return
         
+        # Set camera properties
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize lag
+        
+        # Test if we can actually get a frame
+        ret, test_frame = self.cap.read()
+        if not ret or test_frame is None:
+            messagebox.showerror("Error", "Camera opened but no frames were captured.")
+            self.root.quit()
+            return
+        
+        print("Camera successfully initialized")
         
         # Start the video feed
         self.update_video_feed()
