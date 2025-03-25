@@ -597,25 +597,16 @@ class GestureRecognitionApp:
 
     def update_video_feed(self):
         try:
-            # Capture frame from appropriate camera
-            if hasattr(self, 'using_picamera2') and self.using_picamera2:
-                frame = self.picam2.capture_array()
-                # Convert from RGB to BGR for OpenCV processing if needed
-                if frame.shape[2] == 3:  # RGB format
-                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            else:
-                ret, frame = self.cap.read()
-                if not ret:
-                    print("Failed to grab frame")
-                    self.root.after(10, self.update_video_feed)
-                    return
+            # Capture frame using picamera2
+            frame = self.picam2.capture_array()
             
-            # Process the frame as usual
-            frame = cv2.flip(frame, 1)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Convert from RGB to BGR for OpenCV processing if needed
+            frame_rgb = frame  # Picamera2 in RGB888 mode already gives RGB format
             
+            # Process with MediaPipe
             hand_results = self.hands.process(frame_rgb)
             
+            # Draw landmarks and process further
             frame_with_landmarks = self.draw_hand_landmarks(
                 frame_rgb.copy(), 
                 hand_results.multi_hand_landmarks
@@ -623,6 +614,7 @@ class GestureRecognitionApp:
             
             landmarks = self.combine_landmarks(hand_results.multi_hand_landmarks)
 
+            # Add UI elements based on mode
             font = cv2.FONT_HERSHEY_SIMPLEX
             
             if self.recording:
@@ -638,23 +630,28 @@ class GestureRecognitionApp:
                 
                 if not self.recognition_timer:
                     self.recognition_timer = time.time()
-                elif time.time() - self.recognition_timer >= 5:  # 5 seconds
+                elif time.time() - self.recognition_timer >= 5:
                     if landmarks:
                         self.process_recognition(landmarks)
                     self.recognition_timer = None
                 else:
-                    # Show countdown during recognition
                     remaining = 5 - (time.time() - self.recognition_timer)
                     cv2.putText(frame_with_landmarks, f"Analyzing in {remaining:.1f}s", (50, 100), font, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
+            # Convert to PIL format for Tkinter
             img = Image.fromarray(frame_with_landmarks)
             imgtk = ImageTk.PhotoImage(image=img)
             self.canvas.imgtk = imgtk
             self.canvas.create_image(0, 0, anchor=tk.NW, image=imgtk)
+
         except Exception as e:
             print(f"Error in update_video_feed: {e}")
+            import traceback
+            traceback.print_exc()
         
+        # Schedule next update
         self.root.after(10, self.update_video_feed)
+
     def process_recognition(self, landmarks):
         if self.recognition_mode:
             if self.model is None:
@@ -827,7 +824,7 @@ class GestureRecognitionApp:
         self.logger_button.pack(side=tk.LEFT, padx=10)
                 
     def setup_camera(self):
-        # First set up MediaPipe components
+    # Set up MediaPipe components
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
@@ -839,45 +836,43 @@ class GestureRecognitionApp:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
         
-        # Try to use picamera2 (newer Raspberry Pi OS)
+        # Since libcamera-hello works, use Picamera2 directly
         try:
             from picamera2 import Picamera2
+            from libcamera import Transform
             
-            # Initialize the camera
+            # Initialize with specific configuration
             self.picam2 = Picamera2()
+            
+            # Configure with more specific options
             camera_config = self.picam2.create_preview_configuration(
-                main={"size": (640, 480), "format": "RGB888"}
+                main={"size": (640, 480), "format": "RGB888"},
+                transform=Transform(hflip=1)  # Pre-flip horizontally
             )
             self.picam2.configure(camera_config)
+            
+            # Start the camera
             self.picam2.start()
             
-            # Wait for camera to initialize
+            # Wait for camera to initialize fully
             time.sleep(2)
             
-            print("Using Picamera2 for Raspberry Pi Camera Module")
+            # Test capture to ensure it's working
+            test_frame = self.picam2.capture_array()
+            if test_frame is None or test_frame.size == 0:
+                raise Exception("Camera test capture failed")
+                
+            print("Successfully initialized Picamera2")
             self.using_picamera2 = True
             
-        except (ImportError, ModuleNotFoundError):
-            # Fall back to OpenCV's camera
-            print("Picamera2 not available, falling back to OpenCV camera")
-            self.cap = cv2.VideoCapture(0)
-            
-            # Try different options if initial capture fails
-            if not self.cap.isOpened():
-                print("Trying with V4L2 backend...")
-                self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-                
-            if not self.cap.isOpened():
-                messagebox.showerror("Error", "Cannot access camera")
-                self.root.quit()
-                return
-
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize lag
-            self.using_picamera2 = False
-            
-        self.update_video_feed()
+        except Exception as e:
+            print(f"Error setting up Picamera2: {e}")
+            messagebox.showerror("Camera Error", f"Could not initialize camera: {str(e)}\n\nMake sure no other programs are using the camera.")
+            self.root.quit()  # Exit if camera can't be initialized
+            return
+        
+        # Start video feed update loop
+        self.root.after(100, self.update_video_feed)
 
     def recognize_gesture(self):
         if not self.recording:
@@ -1340,3 +1335,12 @@ class GestureRecognitionApp:
         
         # Weight angles more heavily (they're more important for gesture discrimination)
         return pos_dist + 2.0 * angle_dist
+    
+    def __del__(self):
+    # Clean up resources when app closes
+        if hasattr(self, 'picam2') and self.picam2:
+            try:
+                self.picam2.stop()
+                print("Camera stopped")
+            except:
+                pass
