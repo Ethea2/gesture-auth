@@ -739,10 +739,10 @@ class GestureRecognitionApp:
                     
                     if result:
                         username = result[0]
-                        # Log the successful access
+                        # Log the successful access with success=1
                         cursor.execute(
-                            "INSERT INTO access_logs (user_id, username, confidence) VALUES (?, ?, ?)",
-                            (user_id, username, confidence)
+                            "INSERT INTO access_logs (user_id, username, confidence, success) VALUES (?, ?, ?, ?)",
+                            (user_id, username, confidence, 1)
                         )
                         self.conn.commit()
                         
@@ -752,6 +752,27 @@ class GestureRecognitionApp:
                     else:
                         messagebox.showerror("Error", f"User not found (ID: {user_id}).")
                 else:
+                    # Log the failed access attempt
+                    cursor = self.conn.cursor()
+                    cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        username = result[0]
+                        # Log the failed access with success=0
+                        cursor.execute(
+                            "INSERT INTO access_logs (user_id, username, confidence, success) VALUES (?, ?, ?, ?)",
+                            (user_id, username, confidence, 0)
+                        )
+                    else:
+                        # Log failed attempt with unknown user
+                        cursor.execute(
+                            "INSERT INTO access_logs (user_id, username, confidence, success) VALUES (?, ?, ?, ?)",
+                            (user_id, f"Unknown_ID_{user_id}", confidence, 0)
+                        )
+                    
+                    self.conn.commit()
+    
                     # Show different feedback for low confidence
                     messagebox.showinfo("Recognition Failed", 
                                     f"Confidence too low ({confidence:.2f} < {self.confidence_threshold:.2f})\n\nAccess denied.")
@@ -882,21 +903,23 @@ class GestureRecognitionApp:
         """Open access logger window to display recognition history"""
         logger_window = tk.Toplevel(self.root)
         logger_window.title("Access Logger")
-        logger_window.geometry("800x500")
+        logger_window.geometry("900x500")
         
-        # Create treeview
-        columns = ("timestamp", "username", "confidence")
+        # Create treeview with updated columns
+        columns = ("timestamp", "username", "confidence", "status")
         tree = ttk.Treeview(logger_window, columns=columns, show="headings")
         
         # Define headings
         tree.heading("timestamp", text="Timestamp")
         tree.heading("username", text="Username")
         tree.heading("confidence", text="Confidence")
+        tree.heading("status", text="Status")
         
         # Set column widths
         tree.column("timestamp", width=200)
         tree.column("username", width=200)
         tree.column("confidence", width=100)
+        tree.column("status", width=100)
         
         # Add a scrollbar
         scrollbar = ttk.Scrollbar(logger_window, orient=tk.VERTICAL, command=tree.yview)
@@ -904,7 +927,7 @@ class GestureRecognitionApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         tree.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
         
-        # Add refresh button
+        # Add refresh button with updated query
         def refresh_logs():
             # Clear existing items
             for item in tree.get_children():
@@ -913,14 +936,20 @@ class GestureRecognitionApp:
             # Get logs from database
             cursor = self.conn.cursor()
             cursor.execute(
-                "SELECT timestamp, username, confidence FROM access_logs ORDER BY timestamp DESC"
+                "SELECT timestamp, username, confidence, success FROM access_logs ORDER BY timestamp DESC"
             )
             logs = cursor.fetchall()
             
             # Insert logs into treeview
             for log in logs:
-                timestamp, username, confidence = log
-                tree.insert("", tk.END, values=(timestamp, username, f"{confidence:.2f}"))
+                timestamp, username, confidence, success = log
+                status = "SUCCESS" if success == 1 else "FAILED"
+                status_color = "success" if success == 1 else "failed"
+                
+                item = tree.insert("", tk.END, values=(timestamp, username, f"{confidence:.2f}", status))
+                # Color code the rows
+                if success == 0:
+                    tree.set(item, "status", "FAILED")
         
         # Add filter options
         filter_frame = tk.Frame(logger_window)
@@ -1030,7 +1059,7 @@ class GestureRecognitionApp:
             cursor.execute(query, params)
         else:
             cursor.execute(
-                "SELECT timestamp, username, confidence FROM access_logs ORDER BY timestamp DESC"
+                "SELECT timestamp, username, confidence, CASE WHEN success = 1 THEN 'SUCCESS' ELSE 'FAILED' END as status FROM access_logs ORDER BY timestamp DESC"
             )
         
         logs = cursor.fetchall()
@@ -1039,7 +1068,7 @@ class GestureRecognitionApp:
         try:
             with open(filename, 'w', newline='') as csvfile:
                 writer = csv.writer(csvfile)
-                writer.writerow(["Timestamp", "Username", "Confidence"])
+                writer.writerow(["Timestamp", "Username", "Confidence", "Status"])
                 for log in logs:
                     writer.writerow(log)
                     
