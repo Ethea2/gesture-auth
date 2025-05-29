@@ -32,6 +32,14 @@ class GestureRecognitionApp:
         self.min_samples_per_user = 70  # Minimum samples required per user
         self.confidence_threshold = 0.9  # Adjust based on testing
         self.access_logs = [] # to store the motherfucking access logs
+        
+        # New registration phase variables
+        self.registration_phase = 1  # 1 for normal registration, 2 for angle variations
+        self.phase1_rounds = 4  # Four rounds for phase 1
+        self.phase2_rounds = 2  # Two rounds for phase 2
+        self.current_round = 0
+        self.waiting_for_popup_close = False
+        self.phase1_complete = False
 
         try:
             self.model = joblib.load('gesture_model.joblib')
@@ -165,74 +173,208 @@ class GestureRecognitionApp:
         if not self.recording:
             self.username = simpledialog.askstring("Input", "Enter username:")
             if self.username:
-                # Show instructions before recording starts
-                messagebox.showinfo("Registration Instructions", 
-                                "For best recognition results:\n\n" +
-                                "1. Vary your hand position slightly for each repetition\n" +
-                                "2. Change the distance from the camera\n" +
-                                "3. Rotate your hand subtly between repetitions\n" +
-                                "4. Maintain the core gesture shape")
-                
-                self.recording = True
-                self.samples_count = 0 
+                # Reset registration state
+                self.registration_phase = 1
+                self.current_round = 0
+                self.samples_count = 0
                 self.current_samples = []
-                self.repetition_timer = time.time()
-                self.countdown_seconds = 5  
-                self.status_label.config(text=f"Repetition 1/5: Starting in {self.countdown_seconds} seconds...")
-                self.update_countdown()
+                self.phase1_complete = False
+                self.waiting_for_popup_close = False
+                
+                # Show initial instructions
+                messagebox.showinfo("Registration Instructions", 
+                                "Registration has TWO phases:\n\n" +
+                                "PHASE 1 - Normal Registration (4 rounds):\n" +
+                                "• Take THREE STEPS BACK from the camera\n" +
+                                "• Maintain the same gesture for each round\n" +
+                                "• Each round lasts 5 seconds\n\n" +
+                                "PHASE 2 - Angle Variations (2 rounds):\n" +
+                                "• Same gesture at different angles\n" +
+                                "• Rotate your hand/wrist between rounds\n\n" +
+                                "Click OK to start Phase 1")
+                
+                self.start_registration()
+
+    def start_registration(self):
+        """Start the registration process"""
+        self.recording = True
+        self.current_round = 0
+        self.show_round_popup()
+
+    def show_round_popup(self):
+        """Show popup before each round"""
+        self.waiting_for_popup_close = True
+        
+        if self.registration_phase == 1:
+            # Phase 1 - Normal registration
+            total_rounds = self.phase1_rounds
+            phase_name = "NORMAL REGISTRATION"
+            instructions = "• Stand THREE STEPS BACK from camera\n• Maintain consistent gesture shape\n• Keep hand steady during recording"
+        else:
+            # Phase 2 - Angle variations
+            total_rounds = self.phase2_rounds
+            phase_name = "ANGLE VARIATIONS"
+            if self.current_round == 0:
+                instructions = "• Rotate your hand 45° to the LEFT\n• Keep the same gesture shape\n• Different angle, same gesture"
+            else:
+                instructions = "• Rotate your hand 45° to the RIGHT\n• Keep the same gesture shape\n• Different angle, same gesture"
+        
+        # Create popup window
+        popup = tk.Toplevel(self.root)
+        popup.title(f"Phase {self.registration_phase} - Round {self.current_round + 1}")
+        popup.geometry("450x350")
+        popup.grab_set()  # Make it modal
+        popup.resizable(False, False)
+        
+        # Center the popup
+        popup.transient(self.root)
+        popup.update_idletasks()
+        x = (popup.winfo_screenwidth() // 2) - (popup.winfo_width() // 2)
+        y = (popup.winfo_screenheight() // 2) - (popup.winfo_height() // 2)
+        popup.geometry(f"+{x}+{y}")
+        
+        # Header
+        header_frame = tk.Frame(popup, bg="#2196F3", height=60)
+        header_frame.pack(fill=tk.X)
+        header_frame.pack_propagate(False)
+        
+        tk.Label(header_frame, text=f"PHASE {self.registration_phase}: {phase_name}", 
+                font=("Arial", 16, "bold"), bg="#2196F3", fg="white").pack(expand=True)
+        
+        # Round info
+        info_frame = tk.Frame(popup)
+        info_frame.pack(fill=tk.X, padx=20, pady=20)
+        
+        tk.Label(info_frame, text=f"Round {self.current_round + 1} of {total_rounds}", 
+                font=("Arial", 14, "bold")).pack()
+        
+        tk.Label(info_frame, text="Duration: 5 seconds", 
+                font=("Arial", 12), fg="gray").pack(pady=(5, 15))
+        
+        # Instructions
+        instructions_frame = tk.Frame(popup)
+        instructions_frame.pack(fill=tk.X, padx=20, pady=10)
+        
+        tk.Label(instructions_frame, text="Instructions for this round:", 
+                font=("Arial", 12, "bold")).pack(anchor=tk.W)
+        
+        tk.Label(instructions_frame, text=instructions, 
+                font=("Arial", 11), justify=tk.LEFT, fg="#333333").pack(anchor=tk.W, pady=(5, 0))
+        
+        # Ready button
+        button_frame = tk.Frame(popup)
+        button_frame.pack(fill=tk.X, padx=20, pady=30)
+        
+        def start_round():
+            popup.destroy()
+            self.waiting_for_popup_close = False
+            self.start_current_round()
+        
+        ready_btn = tk.Button(button_frame, text="I'M READY - START ROUND", 
+                            command=start_round,
+                            font=("Arial", 12, "bold"), 
+                            bg="#4CAF50", fg="white", 
+                            padx=30, pady=10)
+        ready_btn.pack()
+        
+        # Update status
+        phase_text = "Phase 1: Normal Registration" if self.registration_phase == 1 else "Phase 2: Angle Variations"
+        self.status_label.config(text=f"{phase_text} - Waiting for Round {self.current_round + 1}")
+
+    def start_current_round(self):
+        """Start the actual recording for the current round"""
+        self.repetition_timer = time.time()
+        self.countdown_seconds = 5
+        self.last_sample_time = 0
+        
+        phase_text = "Phase 1" if self.registration_phase == 1 else "Phase 2"
+        total_rounds = self.phase1_rounds if self.registration_phase == 1 else self.phase2_rounds
+        
+        self.status_label.config(text=f"{phase_text} - Round {self.current_round + 1}/{total_rounds}: Starting...")
+        self.update_countdown()
 
     def update_countdown(self):
-        if self.recording:
+        if self.recording and not self.waiting_for_popup_close:
             current_time = time.time()
             elapsed_time = current_time - self.repetition_timer
             self.countdown_seconds = max(0, 5 - int(elapsed_time))
             
             if self.countdown_seconds > 0:
-                self.status_label.config(text=f"Repetition {self.samples_count+1}/5: {self.countdown_seconds} seconds remaining...")
-                self.root.after(1000, self.update_countdown)  
+                phase_text = "Phase 1" if self.registration_phase == 1 else "Phase 2"
+                total_rounds = self.phase1_rounds if self.registration_phase == 1 else self.phase2_rounds
+                self.status_label.config(text=f"{phase_text} - Round {self.current_round + 1}/{total_rounds}: {self.countdown_seconds} seconds remaining...")
+                self.root.after(1000, self.update_countdown)
 
     def process_registration(self, landmarks):
-        current_time = time.time()
-        
-        if self.recording and self.samples_count < 5:
-            elapsed_time = current_time - self.repetition_timer
+        if not self.recording or self.waiting_for_popup_close:
+            return
             
-            # Collect multiple samples during each repetition window
-            if elapsed_time < 5 and time.time() - self.last_sample_time > 0.2:  # Collect a sample every 0.2 seconds
-                features = self.extract_features(landmarks)
+        current_time = time.time()
+        elapsed_time = current_time - self.repetition_timer
+        
+        # Collect samples during the 5-second window
+        if elapsed_time < 5 and time.time() - self.last_sample_time > 0.2:  # Sample every 0.2 seconds
+            features = self.extract_features(landmarks)
+            
+            # Add original sample
+            self.current_samples.append(features)
+            
+            # Add augmented samples
+            augmented = self.augment_samples(features)
+            for aug_sample in augmented[1:]:  # Skip the first one as it's the original
+                self.current_samples.append(aug_sample)
                 
-                # Add original sample
-                self.current_samples.append(features)
-                
-                # Add augmented samples
-                augmented = self.augment_samples(features)
-                for aug_sample in augmented[1:]:  # Skip the first one as it's the original
-                    self.current_samples.append(aug_sample)
-                    
-                self.last_sample_time = time.time()
-                # Display sample count
-                samples_in_current_repetition = len([s for s in self.current_samples if len(s) > 0])
-                self.status_label.config(text=f"Repetition {self.samples_count+1}/5: {self.countdown_seconds}s - Samples: {samples_in_current_repetition}")
+            self.last_sample_time = time.time()
+            
+            # Display sample count
+            samples_in_current_round = len([s for s in self.current_samples if len(s) > 0])
+            phase_text = "Phase 1" if self.registration_phase == 1 else "Phase 2"
+            total_rounds = self.phase1_rounds if self.registration_phase == 1 else self.phase2_rounds
+            self.status_label.config(text=f"{phase_text} - Round {self.current_round + 1}/{total_rounds}: {self.countdown_seconds}s - Samples: {samples_in_current_round}")
 
-            elif elapsed_time >= 5:
-                self.samples_count += 1
-                self.repetition_timer = time.time()
+        elif elapsed_time >= 5:
+            # Round completed
+            self.current_round += 1
+            
+            # Check if current phase is complete
+            if self.registration_phase == 1 and self.current_round >= self.phase1_rounds:
+                # Phase 1 complete, move to Phase 2
+                self.registration_phase = 2
+                self.current_round = 0
+                self.phase1_complete = True
                 
-                if self.samples_count < 5:
-                    self.countdown_seconds = 5  # Reset countdown to 5 seconds
-                    self.status_label.config(text=f"Repetition {self.samples_count+1}/5: {self.countdown_seconds} seconds remaining...")
-                    self.update_countdown()
-                    # Ask the user to vary their gesture slightly
-                    if self.samples_count == 1:
-                        messagebox.showinfo("Vary Gesture", "Please vary your hand position, angle, and distance from camera for each repetition to improve recognition.")
-                else:
-                    if len(self.current_samples) < self.min_samples_per_user:
-                        messagebox.showwarning("Warning", f"Only {len(self.current_samples)} samples collected. Registration might not be reliable.")
-                    
-                    self.save_user_data()
-                    self.recording = False
-                    self.status_label.config(text="Registration Complete!")
-                    messagebox.showinfo("Registration", f"Registration complete with {len(self.current_samples)} samples!")
+                messagebox.showinfo("Phase 1 Complete", 
+                                "Phase 1 completed successfully!\n\n" +
+                                "Now starting Phase 2: Angle Variations\n" +
+                                "You'll perform the SAME gesture at different angles.")
+                
+                self.show_round_popup()
+                
+            elif self.registration_phase == 2 and self.current_round >= self.phase2_rounds:
+                # Both phases complete
+                self.complete_registration()
+                
+            else:
+                # Continue with next round in current phase
+                self.show_round_popup()
+
+    def complete_registration(self):
+        """Complete the registration process"""
+        if len(self.current_samples) < self.min_samples_per_user:
+            messagebox.showwarning("Warning", f"Only {len(self.current_samples)} samples collected. Registration might not be reliable.")
+        
+        self.save_user_data()
+        self.recording = False
+        self.waiting_for_popup_close = False
+        
+        self.status_label.config(text="Registration Complete!")
+        messagebox.showinfo("Registration Complete", 
+                          f"Registration completed successfully!\n\n" +
+                          f"Total samples collected: {len(self.current_samples)}\n" +
+                          f"Phase 1 (Normal): {self.phase1_rounds} rounds\n" +
+                          f"Phase 2 (Angles): {self.phase2_rounds} rounds\n\n" +
+                          "Your gesture is now registered for authentication.")
+
     def save_user_data(self):
         cursor = self.conn.cursor()
         cursor.execute("INSERT INTO users (username) VALUES (?)", (self.username,))
@@ -613,10 +755,15 @@ class GestureRecognitionApp:
 
             font = cv2.FONT_HERSHEY_SIMPLEX
             
-            if self.recording:
+            if self.recording and not self.waiting_for_popup_close:
                 countdown_text = f"Time: {self.countdown_seconds}s"
                 cv2.putText(frame_with_landmarks, countdown_text, (50, 50), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
-                cv2.putText(frame_with_landmarks, f"Repetition: {self.samples_count+1}/5", (50, 100), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                
+                phase_text = f"Phase {self.registration_phase}"
+                total_rounds = self.phase1_rounds if self.registration_phase == 1 else self.phase2_rounds
+                round_text = f"Round: {self.current_round+1}/{total_rounds}"
+                cv2.putText(frame_with_landmarks, phase_text, (50, 100), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                cv2.putText(frame_with_landmarks, round_text, (50, 150), font, 1, (255, 0, 0), 2, cv2.LINE_AA)
                 
                 if landmarks:
                     self.process_registration(landmarks)
