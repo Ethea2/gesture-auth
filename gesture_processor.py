@@ -3,13 +3,13 @@ import cv2
 import mediapipe as mp
 
 class GestureProcessor:
-    def __init__(self, frame_width=640, frame_height=480, box_width=200, box_height=200):
+    def __init__(self, frame_width=640, frame_height=480, box_width=600, box_height=300):
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.box_width = box_width
         self.box_height = box_height
         self.box_x = (frame_width - box_width) // 2
-        self.box_y = (frame_height - box_height) // 2
+        self.box_y = (frame_height - 200) // 2
         
         # Initialize MediaPipe
         self.mp_hands = mp.solutions.hands
