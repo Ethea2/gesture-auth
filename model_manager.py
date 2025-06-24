@@ -1,264 +1,295 @@
 import numpy as np
-import joblib
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import cross_val_score
+import pickle
+import os
 from sklearn.ensemble import RandomForestClassifier
-from tkinter import messagebox
+from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.preprocessing import StandardScaler
+import sqlite3
 
 class ModelManager:
-    def __init__(self, min_samples_per_user=15, confidence_threshold=0.7):
+    def __init__(self, model_path="gesture_model.pkl", scaler_path="gesture_scaler.pkl"):
+        self.model_path = model_path
+        self.scaler_path = scaler_path
         self.model = None
-        self.scaler = StandardScaler()
-        self.min_samples_per_user = min_samples_per_user
-        self.confidence_threshold = confidence_threshold
+        self.scaler = None
+        self.confidence_threshold = 0.7
+        self.min_samples_per_user = 20
+        self.feature_length = None
         
-        # Try to load existing model
+        # Load existing model if available
+        self.load_model()
+
+    def load_model(self):
+        """Load the trained model and scaler from file"""
         try:
-            self.model = joblib.load('gesture_model.joblib')
-            self.scaler = joblib.load('feature_scaler.joblib')
-            print("Loaded existing model")
-        except:
-            print("No existing model found, will create a new one")
+            if os.path.exists(self.model_path) and os.path.exists(self.scaler_path):
+                with open(self.model_path, 'rb') as f:
+                    self.model = pickle.load(f)
+                with open(self.scaler_path, 'rb') as f:
+                    self.scaler = pickle.load(f)
+                print("Model and scaler loaded successfully")
+                return True
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            self.model = None
+            self.scaler = None
+        return False
 
-    def retrain_model(self, conn):
-        """Retrain the model with all available data"""
+    def save_model(self):
+        """Save the trained model and scaler to file"""
+        try:
+            with open(self.model_path, 'wb') as f:
+                pickle.dump(self.model, f)
+            with open(self.scaler_path, 'wb') as f:
+                pickle.dump(self.scaler, f)
+            print("Model and scaler saved successfully")
+            return True
+        except Exception as e:
+            print(f"Error saving model: {e}")
+            return False
+
+    def prepare_training_data(self, conn, include_negatives=True):
+        """Prepare training data from database, including negative samples"""
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT users.user_id, gesture_samples.feature_data 
-            FROM users 
-            JOIN gesture_samples ON users.user_id = gesture_samples.user_id
-            """
-        )
-        data = cursor.fetchall()
-
-        if not data:
-            print("No training data available")
-            return
         
-        users_samples = {}
-        for user_id, feature_data in data:
-            if user_id not in users_samples:
-                users_samples[user_id] = 0
-            users_samples[user_id] += 1
+        # Get positive samples (authorized users)
+        cursor.execute("""
+            SELECT gs.feature_data, gs.user_id, u.username 
+            FROM gesture_samples gs 
+            JOIN users u ON gs.user_id = u.user_id 
+            WHERE u.username != 'UNAUTHORIZED_SAMPLES' 
+            AND (gs.is_negative IS NULL OR gs.is_negative = 0)
+        """)
+        positive_samples = cursor.fetchall()
         
-        # Check if we have enough samples per user
-        min_samples = min(users_samples.values()) if users_samples else 0
-        if min_samples < self.min_samples_per_user:
-            print(f"Warning: Some users have only {min_samples} samples, which may be insufficient")
+        if not positive_samples:
+            print("No positive training samples found")
+            return None, None
         
-        X = []
-        y = []
+        # Prepare positive data
+        X_positive = []
+        y_positive = []
+        user_mapping = {}
+        user_counter = 0
         
-        # Process each sample
-        for sample in data:
-            user_id, feature_data = sample
+        for sample_data, user_id, username in positive_samples:
             try:
-                features = np.frombuffer(feature_data, dtype=np.float32)
-                if len(features) > 0:  # Make sure we have valid features
-                    # Clean features to remove any NaN or inf values
-                    features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
-                    X.append(features)
-                    y.append(user_id)
+                features = np.frombuffer(sample_data, dtype=np.float32)
+                if self.feature_length is None:
+                    self.feature_length = len(features)
+                elif len(features) != self.feature_length:
+                    print(f"Feature length mismatch: expected {self.feature_length}, got {len(features)}")
+                    continue
+                
+                if user_id not in user_mapping:
+                    user_mapping[user_id] = user_counter
+                    user_counter += 1
+                
+                X_positive.append(features)
+                y_positive.append(user_mapping[user_id])
+                
             except Exception as e:
                 print(f"Error processing sample: {e}")
+                continue
         
-        if len(X) == 0:
-            print("Not enough valid samples to train model")
-            return
+        if not X_positive:
+            print("No valid positive samples found")
+            return None, None
         
-        # Find the most common feature length BEFORE creating numpy array
-        feature_lengths = [len(features) for features in X]
-        if not feature_lengths:
-            print("No valid features found")
-            return
+        X_positive = np.array(X_positive)
+        y_positive = np.array(y_positive)
+        
+        print(f"Loaded {len(X_positive)} positive samples for {len(user_mapping)} users")
+        
+        # Get negative samples if requested
+        if include_negatives:
+            cursor.execute("""
+                SELECT gs.feature_data 
+                FROM gesture_samples gs 
+                JOIN users u ON gs.user_id = u.user_id 
+                WHERE u.username = 'UNAUTHORIZED_SAMPLES' 
+                OR gs.is_negative = 1
+            """)
+            negative_samples = cursor.fetchall()
             
-        common_length = max(set(feature_lengths), key=feature_lengths.count)
-        print(f"Feature lengths found: {set(feature_lengths)}")
-        print(f"Using common length: {common_length}")
-        
-        # Pad or truncate ALL features to common length BEFORE array conversion
-        X_processed = []
-        for i, features in enumerate(X):
-            features_array = np.array(features, dtype=np.float32)
-            if len(features_array) < common_length:
-                features_array = np.pad(features_array, (0, common_length - len(features_array)), mode='constant')
-            elif len(features_array) > common_length:
-                features_array = features_array[:common_length]
-            # Clean again after processing
-            features_array = np.nan_to_num(features_array, nan=0.0, posinf=1.0, neginf=-1.0)
-            X_processed.append(features_array)
-        
-        # Now all features should have the same length
-        try:
-            X_processed = np.array(X_processed, dtype=np.float32)
-        except ValueError as e:
-            print(f"Error creating numpy array: {e}")
-            # Debug: print shapes of first few features
-            for i in range(min(5, len(X_processed))):
-                print(f"Feature {i} shape: {X_processed[i].shape}")
-            return
-            
-        # Check if we have at least two different classes
-        if len(set(y)) < 2:
-            print("Need at least two different users to train the model")
-            # Save the scaled features but skip training until we have 2+ users
-            if X_processed.size > 0:
-                # Final check for NaN/inf values
-                if np.any(np.isnan(X_processed)) or np.any(np.isinf(X_processed)):
-                    print("Still found NaN/inf after cleaning, replacing with zeros")
-                    X_processed = np.nan_to_num(X_processed, nan=0.0, posinf=1.0, neginf=-1.0)
+            if negative_samples:
+                X_negative = []
+                for sample_data, in negative_samples:
+                    try:
+                        features = np.frombuffer(sample_data, dtype=np.float32)
+                        if len(features) == self.feature_length:
+                            X_negative.append(features)
+                    except Exception as e:
+                        print(f"Error processing negative sample: {e}")
+                        continue
                 
-                # Scale features
-                self.scaler = StandardScaler()
-                self.scaler.fit(X_processed)
-                joblib.dump(self.scaler, 'feature_scaler.joblib')
-            return
+                if X_negative:
+                    X_negative = np.array(X_negative)
+                    # Assign a special class label for negative samples
+                    y_negative = np.full(len(X_negative), -1)  # -1 for unauthorized
+                    
+                    # Combine positive and negative data
+                    X_combined = np.vstack([X_positive, X_negative])
+                    y_combined = np.concatenate([y_positive, y_negative])
+                    
+                    print(f"Added {len(X_negative)} negative samples")
+                    return X_combined, y_combined, user_mapping
+        
+        return X_positive, y_positive, user_mapping
 
-        # Continue with model training
-        # Final validation before scaling
-        if np.any(np.isnan(X_processed)) or np.any(np.isinf(X_processed)):
-            print("Found NaN/inf in processed features, cleaning again...")
-            X_processed = np.nan_to_num(X_processed, nan=0.0, posinf=1.0, neginf=-1.0)
+    def train_model(self, conn):
+        """Train the model with both positive and negative samples"""
+        print("Starting model training with negative learning support...")
         
-        # Scale features
+        # Prepare training data
+        data = self.prepare_training_data(conn, include_negatives=True)
+        if data is None:
+            print("Failed to prepare training data")
+            return False
+        
+        X, y, user_mapping = data
+        
+        if len(X) < 10:  # Minimum samples required
+            print("Not enough training samples")
+            return False
+        
+        # Create and fit scaler
         self.scaler = StandardScaler()
-        try:
-            X_scaled = self.scaler.fit_transform(X_processed)
-            
-            # Check if scaling introduced NaN/inf
-            if np.any(np.isnan(X_scaled)) or np.any(np.isinf(X_scaled)):
-                print("Scaling introduced NaN/inf, cleaning...")
-                X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=1.0, neginf=-1.0)
-                
-        except Exception as e:
-            print(f"Error during scaling: {e}")
-            print("Using original features without scaling")
-            X_scaled = X_processed
+        X_scaled = self.scaler.fit_transform(X)
         
-        # Print diagnostics
-        print(f"Training model with {len(X_scaled)} samples from {len(set(y))} users")
-        print(f"Feature length: {common_length}")
-        print(f"Feature range: min={np.min(X_scaled):.4f}, max={np.max(X_scaled):.4f}")
+        # Split data for training and validation
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_scaled, y, test_size=0.2, random_state=42, stratify=y if len(np.unique(y)) > 1 else None
+        )
         
-        # Evaluate model with cross-validation 
-        if len(set(y)) > 1 and len(X_scaled) >= 10:
-            try:
-                # Use both SVC and RandomForest for comparison
-                svc_model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
-                rf_model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
-                
-                # Try cross-validation with better error handling
-                try:
-                    svc_scores = cross_val_score(svc_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
-                    svc_mean = np.mean(svc_scores)
-                except Exception as svc_error:
-                    print(f"SVC cross-validation failed: {svc_error}")
-                    svc_mean = 0.0
-                    svc_scores = [0.0]
-                
-                try:
-                    rf_scores = cross_val_score(rf_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
-                    rf_mean = np.mean(rf_scores)
-                except Exception as rf_error:
-                    print(f"RandomForest cross-validation failed: {rf_error}")
-                    rf_mean = 0.0
-                    rf_scores = [0.0]
-                
-                print(f"SVC cross-validation accuracy: {svc_mean:.2f} ± {np.std(svc_scores):.2f}")
-                print(f"RandomForest cross-validation accuracy: {rf_mean:.2f} ± {np.std(rf_scores):.2f}")
-                
-                # Choose the better model
-                if rf_mean > svc_mean:
-                    self.model = rf_model
-                    print("Using RandomForest classifier based on cross-validation")
-                    model_accuracy = rf_mean
+        # Create model with probability estimates for confidence scoring
+        # Using RandomForest as it handles multi-class + outlier detection well
+        self.model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=15,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42,
+            class_weight='balanced'  # Handle imbalanced positive/negative samples
+        )
+        
+        # Train the model
+        self.model.fit(X_train, y_train)
+        
+        # Evaluate model
+        y_pred = self.model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        print(f"Model training completed. Accuracy: {accuracy:.3f}")
+        
+        # Print classification report if we have enough test samples
+        if len(y_test) > 5:
+            unique_classes = np.unique(y_test)
+            class_names = []
+            for cls in unique_classes:
+                if cls == -1:
+                    class_names.append("UNAUTHORIZED")
                 else:
-                    self.model = svc_model
-                    print("Using SVC classifier based on cross-validation")
-                    model_accuracy = svc_mean
-                    
-                # Set confidence threshold based on model accuracy
-                self.confidence_threshold = min(0.9, max(0.6, 1.0 - 1.5 * (1.0 - model_accuracy)))
-                print(f"Setting confidence threshold to {self.confidence_threshold:.2f}")
-                
-                if model_accuracy < 0.7:
-                    print("Warning: Model accuracy is low. Consider collecting more varied samples.")
-                    messagebox.showwarning("Warning", "Recognition accuracy may be low. Try adding more varied samples for each gesture.")
-                    
-            except Exception as e:
-                print(f"Cross-validation error: {e}")
-                # Fallback to RandomForest if cross-validation fails
-                self.model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
-        else:
-            # If not enough data for cross-validation, use RandomForest as default
-            self.model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
+                    # Find username for this class
+                    for user_id, mapped_id in user_mapping.items():
+                        if mapped_id == cls:
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
+                            result = cursor.fetchone()
+                            if result:
+                                class_names.append(result[0])
+                                break
+                    else:
+                        class_names.append(f"User_{cls}")
+            
+            print("\nClassification Report:")
+            try:
+                print(classification_report(y_test, y_pred, target_names=class_names, zero_division=0))
+            except:
+                print("Could not generate detailed classification report")
         
-        # Train the model with error handling
-        try:
-            self.model.fit(X_scaled, y)
-            print("Model training successful")
-        except Exception as e:
-            print(f"Error training model: {e}")
-            messagebox.showerror("Training Error", f"Failed to train model: {str(e)}")
-            self.model = None
-            return
+        # Save the model
+        self.save_model()
         
-        # Save the model and scaler
-        if self.model is not None:
-            joblib.dump(self.model, 'gesture_model.joblib')
-            joblib.dump(self.scaler, 'feature_scaler.joblib')
-            print("Model training complete")
+        # Store user mapping for prediction
+        self.user_mapping = user_mapping
+        return True
+
+    def retrain_model(self, conn):
+        """Retrain the model (alias for train_model for compatibility)"""
+        return self.train_model(conn)
+
+    def retrain_with_negatives(self, conn):
+        """Explicitly retrain with emphasis on negative samples"""
+        return self.train_model(conn)
 
     def predict(self, features):
-        """Make a prediction with confidence score"""
-        if self.model is None:
-            return None, 0.0
-            
+        """Predict user from features with negative sample detection"""
+        if self.model is None or self.scaler is None:
+            print("Model not trained yet")
+            return None
+        
         try:
-            # Process features to match expected format
-            if hasattr(self.model, 'n_features_in_'):
-                expected_length = self.model.n_features_in_
-            elif hasattr(self.model, 'support_vectors_') and len(self.model.support_vectors_) > 0:
-                expected_length = len(self.model.support_vectors_[0])
-            else:
-                print("Cannot determine expected feature length from model")
-                return None, 0.0
-                
-            # Pad or truncate features to match expected length
-            if len(features) < expected_length:
-                features = np.pad(features, (0, expected_length - len(features)), mode='constant')
-            elif len(features) > expected_length:
-                features = features[:expected_length]
+            # Ensure features are the right shape and type
+            if len(features) != self.feature_length:
+                print(f"Feature length mismatch: expected {self.feature_length}, got {len(features)}")
+                return None
+            
+            features = np.array(features, dtype=np.float32).reshape(1, -1)
             
             # Scale features
-            features_scaled = self.scaler.transform([features])
-                
-            # Make prediction with probability
-            if hasattr(self.model, 'predict_proba'):
-                probabilities = self.model.predict_proba(features_scaled)[0]
-                max_prob = np.max(probabilities)
-                user_id = int(self.model.classes_[np.argmax(probabilities)])
-                confidence = max_prob
-            else:
-                # Fallback if probabilities not available
-                user_id = int(self.model.predict(features_scaled)[0])
-                confidence = 1.0
-                try:
-                    decision_values = self.model.decision_function(features_scaled)
-                    confidence = np.max(np.abs(decision_values)) / 10  # Scale to 0-1 range approximately
-                except:
-                    pass
+            features_scaled = self.scaler.transform(features)
             
+            # Get prediction probabilities
+            probabilities = self.model.predict_proba(features_scaled)[0]
+            predicted_class = self.model.predict(features_scaled)[0]
+            
+            # Handle negative class prediction
+            if predicted_class == -1:
+                print("Gesture classified as unauthorized")
+                return None  # Unauthorized gesture detected
+            
+            # Get confidence for the predicted class
+            class_indices = self.model.classes_
+            if predicted_class in class_indices:
+                class_idx = np.where(class_indices == predicted_class)[0][0]
+                confidence = probabilities[class_idx]
+            else:
+                confidence = 0.0
+            
+            # Check if there's a strong negative class prediction
+            if -1 in class_indices:
+                negative_idx = np.where(class_indices == -1)[0][0]
+                negative_confidence = probabilities[negative_idx]
+                
+                # If negative confidence is high, reject even if positive class has higher score
+                if negative_confidence > 0.3:  # Threshold for negative detection
+                    print(f"High negative confidence: {negative_confidence:.3f}, rejecting gesture")
+                    return None
+            
+            # Find the corresponding user_id
+            user_id = None
+            for uid, mapped_id in self.user_mapping.items():
+                if mapped_id == predicted_class:
+                    user_id = uid
+                    break
+            
+            if user_id is None:
+                print("Could not map predicted class to user ID")
+                return None
+            
+            print(f"Predicted user_id: {user_id}, confidence: {confidence:.3f}")
             return user_id, confidence
             
         except Exception as e:
             print(f"Prediction error: {e}")
-            return None, 0.0
+            import traceback
+            traceback.print_exc()
+            return None
 
     def is_confident_prediction(self, confidence):
-        """Check if prediction meets confidence threshold"""
+        """Check if prediction confidence is above threshold"""
         return confidence >= self.confidence_threshold
 
     def update_settings(self, min_samples=None, confidence_threshold=None):
@@ -267,3 +298,25 @@ class ModelManager:
             self.min_samples_per_user = min_samples
         if confidence_threshold is not None:
             self.confidence_threshold = confidence_threshold
+        print(f"Settings updated: min_samples={self.min_samples_per_user}, confidence_threshold={self.confidence_threshold}")
+
+    def get_model_info(self):
+        """Get information about the current model"""
+        if self.model is None:
+            return "No model trained"
+        
+        info = {
+            'model_type': type(self.model).__name__,
+            'feature_length': self.feature_length,
+            'confidence_threshold': self.confidence_threshold,
+            'min_samples_per_user': self.min_samples_per_user,
+            'classes': len(self.model.classes_) if hasattr(self.model, 'classes_') else 'Unknown'
+        }
+        return info
+
+    def load_or_create_model(self, conn):
+        """Load existing model or create new one if needed"""
+        if not self.load_model():
+            print("No existing model found, training new model...")
+            return self.train_model(conn)
+        return True

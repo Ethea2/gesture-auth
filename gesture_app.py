@@ -44,6 +44,10 @@ class GestureRecognitionApp:
         self.manual_recognition_start_time = None
         self.manual_recognition_duration = 3.0  # 3 seconds to perform gesture
         
+        # Learning feedback variables
+        self.current_recognition_features = None
+        self.current_recognition_result = None
+        
         # GUI setup
         self.setup_gui()
         self.setup_camera()
@@ -70,7 +74,7 @@ class GestureRecognitionApp:
                                              font=("Arial", 12), bg="#4CAF50", fg="white", padx=20)
             self.register_button.pack(side=tk.LEFT, padx=10)
         
-            self.recognize_button = tk.Button(button_frame, text="Recognize", command=self.recognize_gesture,
+            self.recognize_button = tk.Button(button_frame, text="🧠 Learn Recognition", command=self.recognize_gesture,
                                               font=("Arial", 12), bg="#2196F3", fg="white", padx=20)
             self.recognize_button.pack(side=tk.LEFT, padx=10)
             
@@ -176,10 +180,10 @@ class GestureRecognitionApp:
             remaining = max(0, self.manual_recognition_duration - elapsed)
             
             if remaining > 0:
-                countdown_text = f"Recognition in progress... {remaining:.1f}s"
+                countdown_text = f"🧠 Learning Recognition... {remaining:.1f}s"
                 cv2.putText(frame, countdown_text, (10, 60), font, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
             else:
-                cv2.putText(frame, "Processing recognition...", (10, 60), font, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(frame, "Processing learning recognition...", (10, 60), font, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
 
     def process_training_mode(self, landmarks):
         """Process training mode specific logic"""
@@ -203,8 +207,8 @@ class GestureRecognitionApp:
         # Initialize timer if not started
         if not self.manual_recognition_start_time:
             self.manual_recognition_start_time = current_time
-            self.status_label.config(text=f"Place hand in box and hold for {self.manual_recognition_duration} seconds...")
-            print("Manual recognition started")
+            self.status_label.config(text=f"🧠 Place hand in box and hold for {self.manual_recognition_duration} seconds...")
+            print("Learning recognition started")
             return
         
         # Check if recognition period is over
@@ -214,29 +218,30 @@ class GestureRecognitionApp:
             # Still in recognition period
             remaining = self.manual_recognition_duration - elapsed
             if landmarks:  # Hand detected
-                self.status_label.config(text=f"Hold steady... {remaining:.1f}s remaining")
+                self.status_label.config(text=f"🧠 Hold steady... {remaining:.1f}s remaining")
                 print(f"Hand detected, {remaining:.1f}s remaining")
             else:
-                self.status_label.config(text=f"Place hand in box... {remaining:.1f}s remaining")
+                self.status_label.config(text=f"🧠 Place hand in box... {remaining:.1f}s remaining")
                 print(f"No hand detected, {remaining:.1f}s remaining")
         else:
             # Recognition period completed
             print(f"Recognition period completed. Landmarks available: {landmarks is not None and len(landmarks) > 0}")
             if landmarks and len(landmarks) > 0:
-                # Perform recognition
-                print("Performing recognition...")
-                self.perform_manual_recognition(landmarks)
+                # Perform learning recognition
+                print("Performing learning recognition...")
+                self.perform_learning_recognition(landmarks)
             else:
                 # No hand detected during recognition period
                 print("No hand detected during recognition period")
                 messagebox.showwarning("Recognition Failed", "No hand detected during recognition period. Please try again.")
                 self.reset_manual_recognition()
 
-    def perform_manual_recognition(self, landmarks):
-        """Perform the actual recognition process"""
+    def perform_learning_recognition(self, landmarks):
+        """Perform recognition with learning feedback"""
         try:
             # Extract features from landmarks
             features = self.gesture_processor.extract_features(landmarks)
+            self.current_recognition_features = features  # Store for learning
             
             # Use model manager directly for prediction
             result = self.model_manager.predict(features)
@@ -249,6 +254,9 @@ class GestureRecognitionApp:
                     user_id = result
                     confidence = None
                 
+                # Store current recognition result for learning
+                self.current_recognition_result = (user_id, confidence)
+                
                 # Get user info from database
                 cursor = self.conn.cursor()
                 cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
@@ -257,46 +265,53 @@ class GestureRecognitionApp:
                 if db_result:
                     username = db_result[0]
                     
-                    # Check confidence if available
+                    # Show recognition result and ask for feedback
                     if confidence is not None:
                         if self.model_manager.is_confident_prediction(confidence):
-                            message = f"✅ Recognized: {username} (Confidence: {confidence:.3f})"
-                            messagebox.showinfo("Recognition Successful", message)
-                            self.status_label.config(text=f"Recognized: {username}")
-                            
-                            # Log the recognition attempt
-                            cursor.execute(
-                                "INSERT INTO access_logs (user_id, username, confidence) VALUES (?, ?, ?)",
-                                (user_id, username, confidence)
-                            )
-                            self.conn.commit()
+                            message = f"✅ Recognized: {username}\nConfidence: {confidence:.3f}\n\nIs this recognition CORRECT?"
+                            is_correct = messagebox.askyesno("🧠 Learning Recognition - Verify Result", message)
                         else:
-                            message = f"⚠️ Low confidence recognition: {username} (Confidence: {confidence:.3f})"
-                            messagebox.showwarning("Low Confidence", message)
-                            self.status_label.config(text="Low confidence - try again")
+                            message = f"⚠️ Low confidence: {username}\nConfidence: {confidence:.3f}\n\nIs this recognition CORRECT?"
+                            is_correct = messagebox.askyesno("🧠 Low Confidence - Verify Result", message)
                     else:
                         # No confidence score available
-                        message = f"✅ Recognized: {username}"
-                        messagebox.showinfo("Recognition Successful", message)
-                        self.status_label.config(text=f"Recognized: {username}")
+                        message = f"✅ Recognized: {username}\n\nIs this recognition CORRECT?"
+                        is_correct = messagebox.askyesno("🧠 Learning Recognition - Verify Result", message)
+                    
+                    # Handle feedback for learning
+                    if is_correct:
+                        # Correct recognition - add positive learning sample
+                        self.add_learning_sample(user_id, username, True)
+                        self.status_label.config(text=f"✅ Correct: {username}")
+                        messagebox.showinfo("🧠 Learning", "Thank you! This helps improve the model accuracy.")
                         
-                        # Log without confidence
+                        # Log successful recognition
                         cursor.execute(
-                            "INSERT INTO access_logs (user_id, username, confidence) VALUES (?, ?, ?)",
-                            (user_id, username, 1.0)  # Default confidence
+                            "INSERT INTO access_logs (user_id, username, confidence, notes) VALUES (?, ?, ?, ?)",
+                            (user_id, username, confidence if confidence else 1.0, "Learning sample (positive)")
                         )
                         self.conn.commit()
+                    else:
+                        # Incorrect recognition - ask for correct identity or if unauthorized
+                        self.status_label.config(text="❌ Incorrect recognition - Learning...")
+                        self.ask_for_correct_identity_or_unauthorized()
+                        
                 else:
                     messagebox.showwarning("Recognition Failed", "User not found in database.")
                     self.status_label.config(text="Recognition failed - User not found")
             else:
-                messagebox.showwarning("Recognition Failed", "Could not recognize gesture. Try again or register more samples.")
-                self.status_label.config(text="Recognition failed - Unknown gesture")
+                # No recognition made - ask if this should be unauthorized or if they want to identify
+                result = messagebox.askyesno("🧠 No Recognition", 
+                                           "Could not recognize gesture.\n\nWould you like to help improve the system by identifying this gesture?")
+                if result:
+                    self.ask_for_correct_identity_or_unauthorized()
+                else:
+                    self.status_label.config(text="Recognition failed - Unknown gesture")
                     
         except Exception as e:
             import traceback
             traceback.print_exc()
-            error_msg = f"An error occurred during recognition: {str(e)}"
+            error_msg = f"An error occurred during learning recognition: {str(e)}"
             messagebox.showerror("Recognition Error", error_msg)
             self.status_label.config(text="Recognition error occurred")
             print(f"Recognition error details: {error_msg}")
@@ -305,16 +320,235 @@ class GestureRecognitionApp:
             # Reset manual recognition mode
             self.reset_manual_recognition()
 
+    def ask_for_correct_identity_or_unauthorized(self):
+        """Ask user for correct identity and add learning sample"""
+        # Get all usernames for selection
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT user_id, username FROM users ORDER BY username")
+        users = cursor.fetchall()
+        
+        if not users:
+            messagebox.showwarning("No Users", "No registered users found.")
+            return
+        
+        # Create selection dialog
+        selection_window = tk.Toplevel(self.root)
+        selection_window.title("🧠 Learning - Correct Identity")
+        selection_window.geometry("400x550")
+        selection_window.grab_set()  # Make it modal
+        
+        # Center the window
+        selection_window.geometry("+%d+%d" % (
+            (self.root.winfo_screenwidth() // 2) - 200,
+            (self.root.winfo_screenheight() // 2) - 275
+        ))
+        
+        tk.Label(selection_window, text="🧠 Who performed this gesture?", 
+                font=("Arial", 12, "bold")).pack(pady=10)
+        
+        tk.Label(selection_window, text="This helps the system learn and improve!", 
+                font=("Arial", 10), fg="gray").pack(pady=5)
+        
+        # Create listbox with usernames
+        listbox_frame = tk.Frame(selection_window)
+        listbox_frame.pack(pady=10, padx=20, fill=tk.BOTH, expand=True)
+        
+        scrollbar = tk.Scrollbar(listbox_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        listbox = tk.Listbox(listbox_frame, yscrollcommand=scrollbar.set, font=("Arial", 10))
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+        
+        # Add usernames to listbox
+        for user_id, username in users:
+            listbox.insert(tk.END, username)
+        
+        # Add separator
+        listbox.insert(tk.END, "────────────────────────")
+        
+        # Add "Unauthorized Gesture" option
+        listbox.insert(tk.END, "🚫 UNAUTHORIZED GESTURE")
+        
+        # Add "New User" option
+        listbox.insert(tk.END, "--- Register New User ---")
+        
+        # Add explanation for unauthorized option
+        explanation_frame = tk.Frame(selection_window)
+        explanation_frame.pack(pady=10, padx=20, fill=tk.X)
+        
+        tk.Label(explanation_frame, text="💡 Select 'UNAUTHORIZED GESTURE' if:", 
+                font=("Arial", 10, "bold"), fg="blue").pack(anchor="w")
+        tk.Label(explanation_frame, text="   • You're testing with random gestures", 
+                font=("Arial", 9), fg="gray").pack(anchor="w")
+        tk.Label(explanation_frame, text="   • This gesture shouldn't match any user", 
+                font=("Arial", 9), fg="gray").pack(anchor="w")
+        tk.Label(explanation_frame, text="   • You want to train rejection of this gesture", 
+                font=("Arial", 9), fg="gray").pack(anchor="w")
+        
+        def on_confirm():
+            selection = listbox.curselection()
+            if selection:
+                index = selection[0]
+                if index < len(users):
+                    # Existing user selected
+                    user_id, username = users[index]
+                    self.add_learning_sample(user_id, username, False)  # False = corrected wrong prediction
+                    messagebox.showinfo("🧠 Learning", f"Thank you! Added corrective learning sample for {username}.")
+                    self.status_label.config(text=f"🔄 Learned from: {username}")
+                elif index == len(users) + 1:  # Skip separator, unauthorized gesture option
+                    # Unauthorized gesture selected
+                    self.add_negative_learning_sample()
+                    # Don't show additional message here, it's shown in add_negative_learning_sample
+                elif index == len(users) + 2:  # Register new user option
+                    # "Register New User" selected
+                    messagebox.showinfo("New User", "Please use the Register button to add a new user first, then try learning recognition again.")
+                
+                selection_window.destroy()
+        
+        def on_cancel():
+            selection_window.destroy()
+        
+        # Buttons
+        button_frame = tk.Frame(selection_window)
+        button_frame.pack(pady=15)
+        
+        tk.Button(button_frame, text="✅ Confirm", command=on_confirm, 
+                 bg="#4CAF50", fg="white", padx=20, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="❌ Cancel", command=on_cancel, 
+                 bg="#f44336", fg="white", padx=20, font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+
+    def add_learning_sample(self, correct_user_id, correct_username, is_positive):
+        """Add the current recognition as a learning sample"""
+        if self.current_recognition_features is None:
+            return
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            # Add the features as a new sample for the correct user
+            cursor.execute(
+                "INSERT INTO gesture_samples (user_id, feature_data) VALUES (?, ?)", 
+                (correct_user_id, self.current_recognition_features.tobytes())
+            )
+            
+            # Log the learning event
+            sample_type = "positive" if is_positive else "corrective"
+            cursor.execute(
+                "INSERT INTO access_logs (user_id, username, confidence, notes) VALUES (?, ?, ?, ?)",
+                (correct_user_id, correct_username, 0.0, f"Learning sample ({sample_type})")
+            )
+            
+            self.conn.commit()
+            
+            # Retrain the model with new data
+            print(f"Added {sample_type} learning sample for {correct_username}")
+            messagebox.showinfo("🧠 Retraining", "Model is being retrained with new learning data...")
+            
+            # Use the model manager's retrain functionality if available
+            if hasattr(self.model_manager, 'retrain_model'):
+                self.model_manager.retrain_model(self.conn)
+            elif hasattr(self.model_manager, 'train_model'):
+                self.model_manager.train_model(self.conn)
+            
+            messagebox.showinfo("✅ Learning Complete", f"Model successfully learned from {correct_username}'s gesture!")
+            
+        except Exception as e:
+            print(f"Error adding learning sample: {e}")
+            messagebox.showerror("Learning Error", f"Could not add learning sample: {str(e)}")
+
+    def add_negative_learning_sample(self):
+        """Add the current recognition as a negative sample (unauthorized gesture)"""
+        if self.current_recognition_features is None:
+            return
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            # Create a special "negative" user entry if it doesn't exist
+            cursor.execute("SELECT user_id FROM users WHERE username = 'UNAUTHORIZED_SAMPLES'")
+            negative_user = cursor.fetchone()
+            
+            if not negative_user:
+                # Create special user for unauthorized samples
+                cursor.execute(
+                    "INSERT INTO users (username) VALUES (?)", 
+                    ("UNAUTHORIZED_SAMPLES",)
+                )
+                cursor.execute("SELECT last_insert_rowid()")
+                negative_user_id = cursor.fetchone()[0]
+                print("Created UNAUTHORIZED_SAMPLES user")
+            else:
+                negative_user_id = negative_user[0]
+            
+            # Ensure is_negative column exists
+            try:
+                cursor.execute("SELECT is_negative FROM gesture_samples LIMIT 1")
+            except:
+                # Column doesn't exist, add it
+                cursor.execute("ALTER TABLE gesture_samples ADD COLUMN is_negative INTEGER DEFAULT 0")
+                self.conn.commit()
+                print("Added is_negative column to gesture_samples")
+            
+            # Add the features as a negative sample
+            cursor.execute(
+                "INSERT INTO gesture_samples (user_id, feature_data, is_negative) VALUES (?, ?, ?)", 
+                (negative_user_id, self.current_recognition_features.tobytes(), 1)
+            )
+            
+            # Log the negative learning event
+            cursor.execute(
+                "INSERT INTO access_logs (user_id, username, confidence, notes) VALUES (?, ?, ?, ?)",
+                (negative_user_id, "UNAUTHORIZED", 0.0, "Learning sample (negative/unauthorized)")
+            )
+            
+            self.conn.commit()
+            print("Successfully added negative learning sample")
+            
+            # Update status immediately
+            self.status_label.config(text="🚫 Learning unauthorized gesture...")
+            
+            # Retrain the model with new negative data
+            messagebox.showinfo("🧠 Negative Learning", "Model is learning to reject this unauthorized gesture...")
+            
+            # Use the model manager's retrain functionality
+            if hasattr(self.model_manager, 'retrain_with_negatives'):
+                success = self.model_manager.retrain_with_negatives(self.conn)
+            elif hasattr(self.model_manager, 'retrain_model'):
+                success = self.model_manager.retrain_model(self.conn)
+            elif hasattr(self.model_manager, 'train_model'):
+                success = self.model_manager.train_model(self.conn)
+            else:
+                success = False
+            
+            if success:
+                messagebox.showinfo("✅ Negative Learning Complete", "Model successfully learned to reject this unauthorized gesture!")
+                self.status_label.config(text="🚫 Learned: Unauthorized gesture")
+            else:
+                messagebox.showwarning("⚠️ Learning Issue", "Negative sample added but model retraining failed. Please check your ModelManager.")
+                self.status_label.config(text="🚫 Sample added, retraining failed")
+            
+        except Exception as e:
+            print(f"Error adding negative learning sample: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            messagebox.showerror("Negative Learning Error", f"Could not add negative learning sample: {str(e)}")
+            self.status_label.config(text="❌ Negative learning failed")
+
     def reset_manual_recognition(self):
         """Reset manual recognition state"""
         self.manual_recognition_mode = False
         self.manual_recognition_start_time = None
+        self.current_recognition_features = None
+        self.current_recognition_result = None
+        
         if self.manual_recognition_timer:
             self.root.after_cancel(self.manual_recognition_timer)
             self.manual_recognition_timer = None
         
         # Reset status after a delay
-        self.root.after(2000, lambda: self.status_label.config(text="Ready - Place hand in blue detection box"))
+        self.root.after(3000, lambda: self.status_label.config(text="Ready - Place hand in blue detection box"))
 
     def process_recognition_mode(self, landmarks):
         """Process recognition mode specific logic"""
@@ -345,9 +579,9 @@ class GestureRecognitionApp:
                 self.status_label.config(text=status_message)
 
     def recognize_gesture(self):
-        """Manual gesture recognition for training mode"""
+        """Manual gesture recognition with learning for training mode"""
         if not self.training_manager.recording and not self.manual_recognition_mode:
-            print("Starting recognition process...")
+            print("Starting learning recognition process...")
             
             cursor = self.conn.cursor()
             cursor.execute("SELECT COUNT(DISTINCT user_id) FROM users")
@@ -355,7 +589,7 @@ class GestureRecognitionApp:
             print(f"Users in database: {user_count}")
             
             if user_count < 1:
-                messagebox.showinfo("Recognition", "Please register at least one user before recognition.")
+                messagebox.showinfo("Learning Recognition", "Please register at least one user before starting learning recognition.")
                 return
                 
             if not self.model_manager.model:
@@ -388,18 +622,28 @@ class GestureRecognitionApp:
             else:
                 print("Model is available")
             
-            # Start manual recognition mode
-            self.manual_recognition_mode = True
-            self.manual_recognition_start_time = None
-            print(f"Manual recognition mode activated. Duration: {self.manual_recognition_duration}s")
-            messagebox.showinfo("Recognition", f"Recognition mode activated. Place your hand in the blue box and hold steady for {self.manual_recognition_duration} seconds.")
+            # Show learning mode explanation
+            message = ("🧠 LEARNING MODE RECOGNITION 🧠\n\n"
+                      "This recognition will help improve the model!\n"
+                      "• You'll verify if the recognition is correct\n"
+                      "• Incorrect predictions help the system learn\n"
+                      "• The model will retrain with new data\n\n"
+                      "Ready to help the system learn?")
+            
+            if messagebox.askyesno("🧠 Learning Mode", message):
+                # Start manual recognition mode
+                self.manual_recognition_mode = True
+                self.manual_recognition_start_time = None
+                self.current_recognition_features = None
+                self.current_recognition_result = None
+                print(f"Learning recognition mode activated. Duration: {self.manual_recognition_duration}s")
         else:
             if self.training_manager.recording:
                 print("Cannot start recognition while recording")
-                messagebox.showwarning("Busy", "Cannot start recognition while recording. Please wait for registration to complete.")
+                messagebox.showwarning("Busy", "Cannot start learning recognition while recording. Please wait for registration to complete.")
             elif self.manual_recognition_mode:
                 print("Recognition already in progress")
-                messagebox.showwarning("Busy", "Recognition already in progress. Please wait.")
+                messagebox.showwarning("Busy", "Learning recognition already in progress. Please wait.")
 
     def open_settings(self):
         """Open settings dialog"""
