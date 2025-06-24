@@ -30,11 +30,19 @@ class GestureRecognitionApp:
         if mode == "training":
             self.training_manager = TrainingManager(self.conn, self.gesture_processor, self.model_manager)
             self.control_panel = RegistrationControlPanel(self.root, self.training_manager)
+            # Add recognition manager for training mode recognition
+            self.recognition_manager = RecognitionManager(self.conn, self.gesture_processor, self.model_manager)
         else:
             self.recognition_manager = RecognitionManager(self.conn, self.gesture_processor, self.model_manager)
         
         # Camera
         self.cap = None
+        
+        # Manual recognition state for training mode
+        self.manual_recognition_mode = False
+        self.manual_recognition_timer = None
+        self.manual_recognition_start_time = None
+        self.manual_recognition_duration = 3.0  # 3 seconds to perform gesture
         
         # GUI setup
         self.setup_gui()
@@ -161,6 +169,17 @@ class GestureRecognitionApp:
             cv2.putText(frame, f"Hands detected: {hands_in_box}", (10, 30), font, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
         else:
             cv2.putText(frame, "No hands in detection box", (10, 30), font, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+        
+        # Add manual recognition countdown overlay
+        if self.manual_recognition_mode and self.manual_recognition_start_time:
+            elapsed = time.time() - self.manual_recognition_start_time
+            remaining = max(0, self.manual_recognition_duration - elapsed)
+            
+            if remaining > 0:
+                countdown_text = f"Recognition in progress... {remaining:.1f}s"
+                cv2.putText(frame, countdown_text, (10, 60), font, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
+            else:
+                cv2.putText(frame, "Processing recognition...", (10, 60), font, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
 
     def process_training_mode(self, landmarks):
         """Process training mode specific logic"""
@@ -172,6 +191,130 @@ class GestureRecognitionApp:
             status_message = self.training_manager.process_registration(landmarks)
             if status_message:
                 self.status_label.config(text=status_message)
+        
+        # Handle manual recognition mode
+        elif self.manual_recognition_mode:
+            self.process_manual_recognition(landmarks)
+
+    def process_manual_recognition(self, landmarks):
+        """Process manual recognition in training mode"""
+        current_time = time.time()
+        
+        # Initialize timer if not started
+        if not self.manual_recognition_start_time:
+            self.manual_recognition_start_time = current_time
+            self.status_label.config(text=f"Place hand in box and hold for {self.manual_recognition_duration} seconds...")
+            print("Manual recognition started")
+            return
+        
+        # Check if recognition period is over
+        elapsed = current_time - self.manual_recognition_start_time
+        
+        if elapsed < self.manual_recognition_duration:
+            # Still in recognition period
+            remaining = self.manual_recognition_duration - elapsed
+            if landmarks:  # Hand detected
+                self.status_label.config(text=f"Hold steady... {remaining:.1f}s remaining")
+                print(f"Hand detected, {remaining:.1f}s remaining")
+            else:
+                self.status_label.config(text=f"Place hand in box... {remaining:.1f}s remaining")
+                print(f"No hand detected, {remaining:.1f}s remaining")
+        else:
+            # Recognition period completed
+            print(f"Recognition period completed. Landmarks available: {landmarks is not None and len(landmarks) > 0}")
+            if landmarks and len(landmarks) > 0:
+                # Perform recognition
+                print("Performing recognition...")
+                self.perform_manual_recognition(landmarks)
+            else:
+                # No hand detected during recognition period
+                print("No hand detected during recognition period")
+                messagebox.showwarning("Recognition Failed", "No hand detected during recognition period. Please try again.")
+                self.reset_manual_recognition()
+
+    def perform_manual_recognition(self, landmarks):
+        """Perform the actual recognition process"""
+        try:
+            # Extract features from landmarks
+            features = self.gesture_processor.extract_features(landmarks)
+            
+            # Use model manager directly for prediction
+            result = self.model_manager.predict(features)
+            
+            if result is not None:
+                # Check if result is a tuple (user_id, confidence) or just user_id
+                if isinstance(result, tuple):
+                    user_id, confidence = result
+                else:
+                    user_id = result
+                    confidence = None
+                
+                # Get user info from database
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT username FROM users WHERE user_id = ?", (user_id,))
+                db_result = cursor.fetchone()
+                
+                if db_result:
+                    username = db_result[0]
+                    
+                    # Check confidence if available
+                    if confidence is not None:
+                        if self.model_manager.is_confident_prediction(confidence):
+                            message = f"✅ Recognized: {username} (Confidence: {confidence:.3f})"
+                            messagebox.showinfo("Recognition Successful", message)
+                            self.status_label.config(text=f"Recognized: {username}")
+                            
+                            # Log the recognition attempt
+                            cursor.execute(
+                                "INSERT INTO access_logs (user_id, username, confidence) VALUES (?, ?, ?)",
+                                (user_id, username, confidence)
+                            )
+                            self.conn.commit()
+                        else:
+                            message = f"⚠️ Low confidence recognition: {username} (Confidence: {confidence:.3f})"
+                            messagebox.showwarning("Low Confidence", message)
+                            self.status_label.config(text="Low confidence - try again")
+                    else:
+                        # No confidence score available
+                        message = f"✅ Recognized: {username}"
+                        messagebox.showinfo("Recognition Successful", message)
+                        self.status_label.config(text=f"Recognized: {username}")
+                        
+                        # Log without confidence
+                        cursor.execute(
+                            "INSERT INTO access_logs (user_id, username, confidence) VALUES (?, ?, ?)",
+                            (user_id, username, 1.0)  # Default confidence
+                        )
+                        self.conn.commit()
+                else:
+                    messagebox.showwarning("Recognition Failed", "User not found in database.")
+                    self.status_label.config(text="Recognition failed - User not found")
+            else:
+                messagebox.showwarning("Recognition Failed", "Could not recognize gesture. Try again or register more samples.")
+                self.status_label.config(text="Recognition failed - Unknown gesture")
+                    
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            error_msg = f"An error occurred during recognition: {str(e)}"
+            messagebox.showerror("Recognition Error", error_msg)
+            self.status_label.config(text="Recognition error occurred")
+            print(f"Recognition error details: {error_msg}")
+        
+        finally:
+            # Reset manual recognition mode
+            self.reset_manual_recognition()
+
+    def reset_manual_recognition(self):
+        """Reset manual recognition state"""
+        self.manual_recognition_mode = False
+        self.manual_recognition_start_time = None
+        if self.manual_recognition_timer:
+            self.root.after_cancel(self.manual_recognition_timer)
+            self.manual_recognition_timer = None
+        
+        # Reset status after a delay
+        self.root.after(2000, lambda: self.status_label.config(text="Ready - Place hand in blue detection box"))
 
     def process_recognition_mode(self, landmarks):
         """Process recognition mode specific logic"""
@@ -195,7 +338,7 @@ class GestureRecognitionApp:
     # Training mode methods
     def register_user(self):
         """Start user registration"""
-        if not self.training_manager.recording:
+        if not self.training_manager.recording and not self.manual_recognition_mode:
             username = simpledialog.askstring("Input", "Enter username:")
             if username:
                 status_message = self.training_manager.start_registration(username)
@@ -203,23 +346,60 @@ class GestureRecognitionApp:
 
     def recognize_gesture(self):
         """Manual gesture recognition for training mode"""
-        if not self.training_manager.recording:
+        if not self.training_manager.recording and not self.manual_recognition_mode:
+            print("Starting recognition process...")
+            
             cursor = self.conn.cursor()
             cursor.execute("SELECT COUNT(DISTINCT user_id) FROM users")
             user_count = cursor.fetchone()[0]
+            print(f"Users in database: {user_count}")
             
-            if user_count < 2:
-                messagebox.showinfo("Recognition", "Please register at least two different users before recognition.")
+            if user_count < 1:
+                messagebox.showinfo("Recognition", "Please register at least one user before recognition.")
                 return
                 
             if not self.model_manager.model:
-                messagebox.showerror("Error", "No trained model available. Please register users first.")
-                return
-                
-            messagebox.showinfo("Recognition", "Perform the gesture inside the blue box to authenticate")
-            # This would trigger a one-time recognition similar to the original implementation
+                print("No model found, attempting to load/create...")
+                # Try to load or retrain the model
+                cursor.execute("SELECT user_id FROM users LIMIT 1")
+                if cursor.fetchone():
+                    messagebox.showinfo("Model Loading", "Loading/training model from existing data...")
+                    try:
+                        # This should trigger model loading/training in your model manager
+                        if hasattr(self.model_manager, 'load_or_create_model'):
+                            self.model_manager.load_or_create_model(self.conn)
+                        elif hasattr(self.model_manager, 'train_model'):
+                            self.model_manager.train_model(self.conn)
+                        elif hasattr(self.model_manager, 'load_model'):
+                            self.model_manager.load_model()
+                        
+                        if not self.model_manager.model:
+                            messagebox.showerror("Error", "Could not load or create model. Please register more users.")
+                            return
+                        else:
+                            print("Model loaded successfully")
+                    except Exception as e:
+                        print(f"Error loading model: {str(e)}")
+                        messagebox.showerror("Error", f"Error loading model: {str(e)}")
+                        return
+                else:
+                    messagebox.showerror("Error", "No trained model available. Please register users first.")
+                    return
+            else:
+                print("Model is available")
+            
+            # Start manual recognition mode
             self.manual_recognition_mode = True
-            self.manual_recognition_timer = None
+            self.manual_recognition_start_time = None
+            print(f"Manual recognition mode activated. Duration: {self.manual_recognition_duration}s")
+            messagebox.showinfo("Recognition", f"Recognition mode activated. Place your hand in the blue box and hold steady for {self.manual_recognition_duration} seconds.")
+        else:
+            if self.training_manager.recording:
+                print("Cannot start recognition while recording")
+                messagebox.showwarning("Busy", "Cannot start recognition while recording. Please wait for registration to complete.")
+            elif self.manual_recognition_mode:
+                print("Recognition already in progress")
+                messagebox.showwarning("Busy", "Recognition already in progress. Please wait.")
 
     def open_settings(self):
         """Open settings dialog"""
