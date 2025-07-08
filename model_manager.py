@@ -12,18 +12,22 @@ class ModelManager:
         self.scaler = StandardScaler()
         self.min_samples_per_user = min_samples_per_user
         self.confidence_threshold = confidence_threshold
+        self.negative_examples = {}
         
         # Try to load existing model
         try:
             self.model = joblib.load('gesture_model.joblib')
             self.scaler = joblib.load('feature_scaler.joblib')
-            print("Loaded existing model")
+            self.negative_examples = joblib.load('negative_examples.joblib')
+            print("Loaded existing model with negative examples")
         except:
             print("No existing model found, will create a new one")
 
     def retrain_model(self, conn):
-        """Retrain the model with all available data"""
+        """Retrain the model with all available data including negative samples"""
         cursor = conn.cursor()
+        
+        # Get positive samples
         cursor.execute(
             """
             SELECT users.user_id, gesture_samples.feature_data 
@@ -31,14 +35,23 @@ class ModelManager:
             JOIN gesture_samples ON users.user_id = gesture_samples.user_id
             """
         )
-        data = cursor.fetchall()
+        positive_data = cursor.fetchall()
+        
+        # Get negative samples
+        cursor.execute(
+            """
+            SELECT user_id, feature_data 
+            FROM negative_samples
+            """
+        )
+        negative_data = cursor.fetchall()
 
-        if not data:
+        if not positive_data:
             print("No training data available")
             return
         
         users_samples = {}
-        for user_id, feature_data in data:
+        for user_id, _ in positive_data:
             if user_id not in users_samples:
                 users_samples[user_id] = 0
             users_samples[user_id] += 1
@@ -50,9 +63,10 @@ class ModelManager:
         
         X = []
         y = []
+        sample_weights = []
         
-        # Process each sample
-        for sample in data:
+        # Process positive samples
+        for sample in positive_data:
             user_id, feature_data = sample
             try:
                 features = np.frombuffer(feature_data, dtype=np.float32)
@@ -61,8 +75,24 @@ class ModelManager:
                     features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
                     X.append(features)
                     y.append(user_id)
+                    sample_weights.append(1.0)  # Normal weight for positive samples
             except Exception as e:
-                print(f"Error processing sample: {e}")
+                print(f"Error processing positive sample: {e}")
+        
+        # Process negative samples - store in negative_examples dict
+        self.negative_examples = {}
+        for sample in negative_data:
+            user_id, feature_data = sample
+            try:
+                features = np.frombuffer(feature_data, dtype=np.float32)
+                if len(features) > 0:
+                    features = np.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
+                    
+                    if user_id not in self.negative_examples:
+                        self.negative_examples[user_id] = []
+                    self.negative_examples[user_id].append(features)
+            except Exception as e:
+                print(f"Error processing negative sample: {e}")
         
         if len(X) == 0:
             print("Not enough valid samples to train model")
@@ -77,6 +107,21 @@ class ModelManager:
         common_length = max(set(feature_lengths), key=feature_lengths.count)
         print(f"Feature lengths found: {set(feature_lengths)}")
         print(f"Using common length: {common_length}")
+        
+        # Process negative examples to match common length
+        processed_negative_examples = {}
+        for user_id, neg_features_list in self.negative_examples.items():
+            processed_list = []
+            for features in neg_features_list:
+                features_array = np.array(features, dtype=np.float32)
+                if len(features_array) < common_length:
+                    features_array = np.pad(features_array, (0, common_length - len(features_array)), mode='constant')
+                elif len(features_array) > common_length:
+                    features_array = features_array[:common_length]
+                features_array = np.nan_to_num(features_array, nan=0.0, posinf=1.0, neginf=-1.0)
+                processed_list.append(features_array)
+            processed_negative_examples[user_id] = processed_list
+        self.negative_examples = processed_negative_examples
         
         # Pad or truncate ALL features to common length BEFORE array conversion
         X_processed = []
@@ -95,9 +140,6 @@ class ModelManager:
             X_processed = np.array(X_processed, dtype=np.float32)
         except ValueError as e:
             print(f"Error creating numpy array: {e}")
-            # Debug: print shapes of first few features
-            for i in range(min(5, len(X_processed))):
-                print(f"Feature {i} shape: {X_processed[i].shape}")
             return
             
         # Check if we have at least two different classes
@@ -114,6 +156,7 @@ class ModelManager:
                 self.scaler = StandardScaler()
                 self.scaler.fit(X_processed)
                 joblib.dump(self.scaler, 'feature_scaler.joblib')
+                joblib.dump(self.negative_examples, 'negative_examples.joblib')
             return
 
         # Continue with model training
@@ -137,63 +180,28 @@ class ModelManager:
             print("Using original features without scaling")
             X_scaled = X_processed
         
+        # Scale negative examples too
+        for user_id in self.negative_examples:
+            scaled_negatives = []
+            for neg_features in self.negative_examples[user_id]:
+                try:
+                    scaled_neg = self.scaler.transform([neg_features])[0]
+                    scaled_negatives.append(scaled_neg)
+                except:
+                    scaled_negatives.append(neg_features)
+            self.negative_examples[user_id] = scaled_negatives
+        
         # Print diagnostics
-        print(f"Training model with {len(X_scaled)} samples from {len(set(y))} users")
+        print(f"Training model with {len(X_scaled)} positive samples from {len(set(y))} users")
+        print(f"Negative samples: {sum(len(v) for v in self.negative_examples.values())} total")
         print(f"Feature length: {common_length}")
         print(f"Feature range: min={np.min(X_scaled):.4f}, max={np.max(X_scaled):.4f}")
         
-        # Evaluate model with cross-validation 
-        if len(set(y)) > 1 and len(X_scaled) >= 10:
-            try:
-                # Use both SVC and RandomForest for comparison
-                svc_model = SVC(kernel='rbf', C=10.0, gamma='scale', probability=True)
-                rf_model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
-                
-                # Try cross-validation with better error handling
-                try:
-                    svc_scores = cross_val_score(svc_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
-                    svc_mean = np.mean(svc_scores)
-                except Exception as svc_error:
-                    print(f"SVC cross-validation failed: {svc_error}")
-                    svc_mean = 0.0
-                    svc_scores = [0.0]
-                
-                try:
-                    rf_scores = cross_val_score(rf_model, X_scaled, y, cv=min(5, len(set(y))), scoring='accuracy')
-                    rf_mean = np.mean(rf_scores)
-                except Exception as rf_error:
-                    print(f"RandomForest cross-validation failed: {rf_error}")
-                    rf_mean = 0.0
-                    rf_scores = [0.0]
-                
-                print(f"SVC cross-validation accuracy: {svc_mean:.2f} ± {np.std(svc_scores):.2f}")
-                print(f"RandomForest cross-validation accuracy: {rf_mean:.2f} ± {np.std(rf_scores):.2f}")
-                
-                # Choose the better model
-                if rf_mean > svc_mean:
-                    self.model = rf_model
-                    print("Using RandomForest classifier based on cross-validation")
-                    model_accuracy = rf_mean
-                else:
-                    self.model = svc_model
-                    print("Using SVC classifier based on cross-validation")
-                    model_accuracy = svc_mean
-                    
-                # Set confidence threshold based on model accuracy
-                self.confidence_threshold = min(0.9, max(0.6, 1.0 - 1.5 * (1.0 - model_accuracy)))
-                print(f"Setting confidence threshold to {self.confidence_threshold:.2f}")
-                
-                if model_accuracy < 0.7:
-                    print("Warning: Model accuracy is low. Consider collecting more varied samples.")
-                    messagebox.showwarning("Warning", "Recognition accuracy may be low. Try adding more varied samples for each gesture.")
-                    
-            except Exception as e:
-                print(f"Cross-validation error: {e}")
-                # Fallback to RandomForest if cross-validation fails
-                self.model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
-        else:
-            # If not enough data for cross-validation, use RandomForest as default
-            self.model = RandomForestClassifier(n_estimators=100, max_depth=None, n_jobs=-1)
+        # Train model with RandomForest (better for handling negative examples)
+        self.model = RandomForestClassifier(n_estimators=150, 
+                                          max_depth=None,
+                                          class_weight='balanced',
+                                          n_jobs=-1)
         
         # Train the model with error handling
         try:
@@ -205,14 +213,15 @@ class ModelManager:
             self.model = None
             return
         
-        # Save the model and scaler
+        # Save the model, scaler, and negative examples
         if self.model is not None:
             joblib.dump(self.model, 'gesture_model.joblib')
             joblib.dump(self.scaler, 'feature_scaler.joblib')
-            print("Model training complete")
+            joblib.dump(self.negative_examples, 'negative_examples.joblib')
+            print("Model training complete with negative samples incorporated")
 
     def predict(self, features):
-        """Make a prediction with confidence score"""
+        """Make a prediction with confidence score, considering negative examples"""
         if self.model is None:
             return None, 0.0
             
@@ -233,29 +242,66 @@ class ModelManager:
                 features = features[:expected_length]
             
             # Scale features
-            features_scaled = self.scaler.transform([features])
+            features_scaled = self.scaler.transform([features])[0]
                 
             # Make prediction with probability
             if hasattr(self.model, 'predict_proba'):
-                probabilities = self.model.predict_proba(features_scaled)[0]
+                probabilities = self.model.predict_proba([features_scaled])[0]
                 max_prob = np.max(probabilities)
                 user_id = int(self.model.classes_[np.argmax(probabilities)])
                 confidence = max_prob
             else:
                 # Fallback if probabilities not available
-                user_id = int(self.model.predict(features_scaled)[0])
+                user_id = int(self.model.predict([features_scaled])[0])
                 confidence = 1.0
-                try:
-                    decision_values = self.model.decision_function(features_scaled)
-                    confidence = np.max(np.abs(decision_values)) / 10  # Scale to 0-1 range approximately
-                except:
-                    pass
+            
+            # Check against negative examples with nuanced penalty
+            if hasattr(self, 'negative_examples') and user_id in self.negative_examples:
+                similarity_scores = []
+                for neg_example in self.negative_examples[user_id]:
+                    similarity = np.linalg.norm(features_scaled - neg_example)
+                    similarity_scores.append(similarity)
+                
+                # Apply graduated penalty based on similarity to negative examples
+                if similarity_scores:
+                    min_similarity = min(similarity_scores)
+                    if min_similarity < 3.0:  # Threshold for similarity
+                        # Graduated penalty - less aggressive than before
+                        penalty = max(0.5, min_similarity / 3.0)
+                        confidence *= penalty
+                        print(f"Applied negative sample penalty: {penalty:.2f} (similarity: {min_similarity:.2f})")
             
             return user_id, confidence
             
         except Exception as e:
             print(f"Prediction error: {e}")
             return None, 0.0
+
+    def calculate_similarity_weight(self, feature1, feature2):
+        """Calculate weighted similarity between two feature vectors"""
+        # Assume the first 63 features are position-based, the rest are angles
+        if len(feature1) <= 63:
+            return np.linalg.norm(feature1 - feature2)
+            
+        # Split features into position and angle components
+        pos_feat1, angle_feat1 = feature1[:63], feature1[63:]
+        pos_feat2, angle_feat2 = feature2[:63], feature2[63:]
+        
+        # Calculate weighted distance
+        pos_dist = np.linalg.norm(pos_feat1 - pos_feat2)
+        angle_dist = np.linalg.norm(angle_feat1 - angle_feat2)
+        
+        # Weight angles more heavily
+        return pos_dist + 2.0 * angle_dist
+
+    def add_negative_sample(self, conn, user_id, features):
+        """Add a negative sample to the database"""
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO negative_samples (user_id, feature_data) VALUES (?, ?)", 
+            (user_id, features.tobytes())
+        )
+        conn.commit()
 
     def is_confident_prediction(self, confidence):
         """Check if prediction meets confidence threshold"""

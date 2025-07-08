@@ -30,8 +30,15 @@ class GestureRecognitionApp:
         if mode == "training":
             self.training_manager = TrainingManager(self.conn, self.gesture_processor, self.model_manager)
             self.control_panel = RegistrationControlPanel(self.root, self.training_manager)
+            # Create recognition manager with feedback enabled for training mode
+            self.recognition_manager = RecognitionManager(self.conn, self.gesture_processor, self.model_manager, enable_feedback=True)
+            self.recognition_manager.set_parent_window(self.root)
+            self.manual_recognition_mode = False
+            self.manual_recognition_timer = None
         else:
-            self.recognition_manager = RecognitionManager(self.conn, self.gesture_processor, self.model_manager)
+            # Create recognition manager without feedback for recognition mode
+            self.recognition_manager = RecognitionManager(self.conn, self.gesture_processor, self.model_manager, enable_feedback=False)
+            self.recognition_manager.set_parent_window(self.root)
         
         # Camera
         self.cap = None
@@ -172,6 +179,19 @@ class GestureRecognitionApp:
             status_message = self.training_manager.process_registration(landmarks)
             if status_message:
                 self.status_label.config(text=status_message)
+        
+        # Handle manual recognition in training mode
+        elif hasattr(self, 'manual_recognition_mode') and self.manual_recognition_mode:
+            if not self.manual_recognition_timer:
+                self.manual_recognition_timer = time.time()
+            elif time.time() - self.manual_recognition_timer >= 5:
+                if landmarks:
+                    self.recognition_manager.perform_manual_recognition(landmarks)
+                self.manual_recognition_mode = False
+                self.manual_recognition_timer = None
+            else:
+                remaining = 5 - (time.time() - self.manual_recognition_timer)
+                self.status_label.config(text=f"Manual Recognition: Analyzing in {remaining:.1f}s")
 
     def process_recognition_mode(self, landmarks):
         """Process recognition mode specific logic"""
@@ -203,7 +223,7 @@ class GestureRecognitionApp:
 
     def recognize_gesture(self):
         """Manual gesture recognition for training mode"""
-        if not self.training_manager.recording:
+        if not self.training_manager.recording and not getattr(self, 'manual_recognition_mode', False):
             cursor = self.conn.cursor()
             cursor.execute("SELECT COUNT(DISTINCT user_id) FROM users")
             user_count = cursor.fetchone()[0]
@@ -216,8 +236,7 @@ class GestureRecognitionApp:
                 messagebox.showerror("Error", "No trained model available. Please register users first.")
                 return
                 
-            messagebox.showinfo("Recognition", "Perform the gesture inside the blue box to authenticate")
-            # This would trigger a one-time recognition similar to the original implementation
+            messagebox.showinfo("Recognition", "Perform the gesture inside the blue box to authenticate\n\nThis will include feedback collection for model improvement.")
             self.manual_recognition_mode = True
             self.manual_recognition_timer = None
 
