@@ -2,6 +2,8 @@ import numpy as np
 import cv2
 import mediapipe as mp
 
+from practical_biometric_enhancement import PracticalBiometricEnhancement
+
 class GestureProcessor:
     def __init__(self, frame_width=640, frame_height=480, box_width=600, box_height=300):
         self.frame_width = frame_width
@@ -21,6 +23,9 @@ class GestureProcessor:
         )
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
+
+        self.biometric_enhancer = PracticalBiometricEnhancement()
+        self.use_biometric_features = True 
 
     def update_box_size(self, width, height):
         """Update detection box size and recalculate position"""
@@ -175,6 +180,9 @@ class GestureProcessor:
 
     def extract_features(self, landmarks):
         """Extract more robust features from landmarks with NaN handling"""
+        if not landmarks:
+            return np.array([])
+        
         # Basic position features
         basic_features = []
         for landmark in landmarks:
@@ -270,7 +278,18 @@ class GestureProcessor:
         # Final check for NaN or inf values
         all_features = np.nan_to_num(all_features, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        return all_features
+        # Apply biometric enhancement if enabled
+        if self.use_biometric_features:
+            try:
+                enhanced_features = self.biometric_enhancer.enhance_existing_features(
+                    landmarks, all_features
+                )
+                return enhanced_features
+            except Exception as e:
+                print(f"Biometric enhancement failed: {e}")
+                return all_features
+        else:
+            return all_features
 
     def augment_samples(self, features):
         """Create slightly modified versions of samples to improve robustness"""
@@ -298,3 +317,25 @@ class GestureProcessor:
             augmented_samples.append(rotated)
         
         return augmented_samples
+
+    def reset_user_context(self):
+        """Call this when switching between users"""
+        if self.use_biometric_features:
+            self.biometric_enhancer.reset_history()
+    
+    def enable_biometric_features(self, enable=True):
+        """Enable or disable biometric feature enhancement"""
+        self.use_biometric_features = enable
+        if enable:
+            print("✅ Biometric features enabled")
+        else:
+            print("❌ Biometric features disabled")
+    
+    def get_feature_info(self):
+        """Get information about current feature configuration"""
+        if self.use_biometric_features:
+            bio_features = self.biometric_enhancer.get_feature_names()
+            total_additional = len(bio_features)
+            return f"Enhanced features: Basic + {total_additional} biometric features"
+        else:
+            return "Basic features only"

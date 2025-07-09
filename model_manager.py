@@ -7,7 +7,7 @@ from sklearn.ensemble import RandomForestClassifier
 from tkinter import messagebox
 
 class ModelManager:
-    def __init__(self, min_samples_per_user=15, confidence_threshold=0.7):
+    def __init__(self, min_samples_per_user=15, confidence_threshold=0.95):
         self.model = None
         self.scaler = StandardScaler()
         self.min_samples_per_user = min_samples_per_user

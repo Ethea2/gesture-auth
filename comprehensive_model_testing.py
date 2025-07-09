@@ -830,80 +830,109 @@ class ComprehensiveModelTesting:
             print("No results to visualize. Run generate_comprehensive_report() first.")
             return
         
-        plt.style.use('seaborn-v0_8')
-        fig = plt.figure(figsize=(20, 15))
+        # Use default style instead of seaborn-v0_8 for better compatibility
+        plt.style.use('default')
+        
+        # Create figure with much more spacing and better size ratio
+        fig = plt.figure(figsize=(20, 12))  # Better aspect ratio
+        
+        # Adjust subplot spacing parameters
+        plt.subplots_adjust(
+            left=0.08,    # Left margin
+            right=0.95,   # Right margin
+            top=0.92,     # Top margin
+            bottom=0.08,  # Bottom margin
+            wspace=0.35,  # Width spacing between subplots
+            hspace=0.45   # Height spacing between subplots
+        )
         
         # Plot 1: Sample Size Effect
         if 'sample_size_effect' in self.results and self.results['sample_size_effect'] is not None:
-            plt.subplot(2, 3, 1)
+            ax1 = plt.subplot(2, 3, 1)
             df_sample = self.results['sample_size_effect']
             avg_by_size = df_sample.groupby('sample_size')['accuracy'].agg(['mean', 'std'])
             
             plt.errorbar(avg_by_size.index, avg_by_size['mean'], yerr=avg_by_size['std'], 
-                        marker='o', capsize=5, capthick=2)
-            plt.xlabel('Number of Training Samples')
-            plt.ylabel('Recognition Accuracy')
-            plt.title('Effect of Training Sample Size')
+                        marker='o', capsize=5, capthick=2, linewidth=2, markersize=8)
+            plt.xlabel('Number of Training Samples', fontsize=11)
+            plt.ylabel('Recognition Accuracy', fontsize=11)
+            plt.title('Effect of Training Sample Size', fontsize=12, fontweight='bold', pad=15)
             plt.grid(True, alpha=0.3)
+            
+            # Better tick formatting
+            ax1.tick_params(axis='both', which='major', labelsize=10)
         
         # Plot 2: Confidence Threshold ROC-style
         if 'confidence_threshold_effect' in self.results and self.results['confidence_threshold_effect'] is not None:
-            plt.subplot(2, 3, 2)
+            ax2 = plt.subplot(2, 3, 2)
             df_conf = self.results['confidence_threshold_effect']
             
-            plt.plot(df_conf['far'], 1 - df_conf['frr'], 'b-o', label='ROC-style curve')
-            plt.xlabel('False Accept Rate')
-            plt.ylabel('True Accept Rate (1 - FRR)')
-            plt.title('Security Performance Trade-off')
+            plt.plot(df_conf['far'], 1 - df_conf['frr'], 'b-o', label='ROC-style curve', linewidth=2, markersize=6)
+            plt.xlabel('False Accept Rate', fontsize=11)
+            plt.ylabel('True Accept Rate\n(1 - FRR)', fontsize=11)  # Line break for long labels
+            plt.title('Security Performance Trade-off', fontsize=12, fontweight='bold', pad=15)
             plt.grid(True, alpha=0.3)
-            plt.legend()
+            plt.legend(fontsize=9)
+            
+            ax2.tick_params(axis='both', which='major', labelsize=10)
         
         # Plot 3: Threshold vs Accuracy
         if 'confidence_threshold_effect' in self.results and self.results['confidence_threshold_effect'] is not None:
-            plt.subplot(2, 3, 3)
+            ax3 = plt.subplot(2, 3, 3)
             df_conf = self.results['confidence_threshold_effect']
             
-            plt.plot(df_conf['threshold'], df_conf['accuracy'], 'g-o', label='Accuracy')
-            plt.plot(df_conf['threshold'], df_conf['accepted_ratio'], 'r-s', label='Acceptance Rate')
-            plt.xlabel('Confidence Threshold')
-            plt.ylabel('Rate')
-            plt.title('Threshold vs Performance')
-            plt.legend()
+            plt.plot(df_conf['threshold'], df_conf['accuracy'], 'g-o', label='Accuracy', linewidth=2, markersize=6)
+            plt.plot(df_conf['threshold'], df_conf['accepted_ratio'], 'r-s', label='Accept Rate', linewidth=2, markersize=6)
+            plt.xlabel('Confidence Threshold', fontsize=11)
+            plt.ylabel('Rate', fontsize=11)
+            plt.title('Threshold vs Performance', fontsize=12, fontweight='bold', pad=15)
+            plt.legend(fontsize=9)
             plt.grid(True, alpha=0.3)
+            
+            ax3.tick_params(axis='both', which='major', labelsize=10)
         
         # Plot 4: Imposter Analysis Heatmap
         if 'imposter_analysis' in self.results and self.results['imposter_analysis'] is not None:
-            plt.subplot(2, 3, 4)
+            ax4 = plt.subplot(2, 3, 4)
             df_imp = self.results['imposter_analysis']
             
             # Create pivot table for heatmap
             pivot_data = df_imp.groupby(['samples_used', 'confidence_threshold'])['combined_performance'].mean().unstack()
             
-            sns.heatmap(pivot_data, annot=True, fmt='.2f', cmap='RdYlGn')
-            plt.xlabel('Confidence Threshold')
-            plt.ylabel('Training Samples')
-            plt.title('Imposter Detection Performance')
+            # Create heatmap without seaborn dependency
+            im = plt.imshow(pivot_data.values, cmap='RdYlGn', aspect='auto', interpolation='nearest')
+            cbar = plt.colorbar(im, shrink=0.7)
+            cbar.ax.tick_params(labelsize=9)
+            
+            # Set ticks and labels with better formatting
+            plt.xticks(range(len(pivot_data.columns)), [f'{col:.1f}' for col in pivot_data.columns], fontsize=10)
+            plt.yticks(range(len(pivot_data.index)), [f'{idx}' for idx in pivot_data.index], fontsize=10)
+            plt.xlabel('Confidence Threshold', fontsize=11)
+            plt.ylabel('Training Samples', fontsize=11)
+            plt.title('Imposter Detection\nPerformance', fontsize=12, fontweight='bold', pad=15)
         
         # Plot 5: Complexity Analysis
         if 'complexity_analysis' in self.results and self.results['complexity_analysis'] is not None:
-            plt.subplot(2, 3, 5)
+            ax5 = plt.subplot(2, 3, 5)
             df_comp = self.results['complexity_analysis']
             
             colors = {'High': 'red', 'Medium': 'orange', 'Low': 'green'}
             for category in df_comp['complexity_category'].unique():
                 mask = df_comp['complexity_category'] == category
                 plt.scatter(df_comp[mask]['avg_feature_variance'], 
-                           df_comp[mask]['recognition_accuracy'],
-                           c=colors.get(category, 'blue'), label=category, s=100, alpha=0.7)
+                        df_comp[mask]['recognition_accuracy'],
+                        c=colors.get(category, 'blue'), label=category, s=120, alpha=0.7)
             
-            plt.xlabel('Feature Variance (Complexity)')
-            plt.ylabel('Recognition Accuracy')
-            plt.title('Gesture Complexity vs Accuracy')
-            plt.legend()
+            plt.xlabel('Feature Variance\n(Complexity)', fontsize=11)
+            plt.ylabel('Recognition\nAccuracy', fontsize=11)
+            plt.title('Gesture Complexity\nvs Accuracy', fontsize=12, fontweight='bold', pad=15)
+            plt.legend(fontsize=9)
             plt.grid(True, alpha=0.3)
+            
+            ax5.tick_params(axis='both', which='major', labelsize=10)
         
         # Plot 6: Summary Performance Comparison
-        plt.subplot(2, 3, 6)
+        ax6 = plt.subplot(2, 3, 6)
         
         # Collect key metrics for comparison
         metrics = []
@@ -926,21 +955,28 @@ class ComprehensiveModelTesting:
             values.extend([avg_legit, avg_reject])
         
         if metrics:
-            bars = plt.bar(metrics, values, color=['skyblue', 'lightgreen', 'salmon', 'gold'][:len(metrics)])
-            plt.ylabel('Performance Rate')
-            plt.title('Overall System Performance')
-            plt.ylim(0, 1)
+            bars = plt.bar(metrics, values, color=['skyblue', 'lightgreen', 'salmon', 'gold'][:len(metrics)], 
+                        width=0.6, edgecolor='black', linewidth=1)
+            plt.ylabel('Performance Rate', fontsize=11)
+            plt.title('Overall System\nPerformance', fontsize=12, fontweight='bold', pad=15)
+            plt.ylim(0, 1.1)
             
-            # Add value labels on bars
+            # Add value labels on bars with better positioning
             for bar, value in zip(bars, values):
-                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                        f'{value:.3f}', ha='center', va='bottom')
+                plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02, 
+                        f'{value:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            
+            # Rotate x-axis labels if needed
+            plt.xticks(rotation=0, fontsize=10)
+            ax6.tick_params(axis='both', which='major', labelsize=10)
         
-        plt.tight_layout()
-        plt.savefig('gesture_recognition_analysis.png', dpi=300, bbox_inches='tight')
+        # Save with higher DPI and better bbox
+        plt.savefig('gesture_recognition_analysis.png', dpi=300, bbox_inches='tight', 
+                facecolor='white', edgecolor='none', pad_inches=0.2)
         plt.show()
         
         print("📊 Visualizations saved as 'gesture_recognition_analysis.png'")
+        print("🎨 Fixed overlapping text issues with better spacing!")
 
 # Usage example
 if __name__ == "__main__":

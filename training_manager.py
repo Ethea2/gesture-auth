@@ -29,6 +29,12 @@ class TrainingManager:
         self.no_hand_start_time = None
         self.pause_delay = 3.0
         self.pause_dialog = None
+        
+        # NEW: Prompt pause system
+        self.prompt_paused = False
+        self.pause_reason = None
+        self.pause_start_time = None
+        self.accumulated_pause_time = 0
 
     def get_phase_instruction(self, phase):
         """Get instruction text for each phase"""
@@ -54,17 +60,100 @@ class TrainingManager:
         """Start the registration process"""
         self.username = username
         
-        # Show comprehensive instructions
-        messagebox.showinfo("Registration Instructions", 
-                        "Enhanced Registration Process (20 repetitions in 4 phases):\n\n" +
-                        "For optimal recognition results:\n" +
-                        "1. Keep your hand INSIDE the blue box at all times\n" +
-                        "2. Follow the phase-specific instructions\n" +
-                        "3. Maintain consistent gesture core while following tilt instructions\n" +
-                        "4. Each phase has 5 repetitions (5 seconds each)\n\n" +
-                        "The system will guide you through each phase.\n" +
-                        "NOTE: Registration will pause if no hand is detected for 3 seconds.")
+        # Pause registration for initial instructions
+        self.pause_for_prompt("initial_instructions")
         
+        # Show comprehensive instructions
+        def on_instructions_ok():
+            self.resume_from_prompt()
+            # Show first phase instruction
+            self.pause_for_prompt("phase_1_start")
+            
+            def on_phase_1_ok():
+                self.resume_from_prompt()
+                self._initialize_registration()
+            
+            self.show_phase_instruction_dialog(1, on_phase_1_ok)
+        
+        self.show_initial_instructions_dialog(on_instructions_ok)
+        
+        return "Registration starting - please read instructions"
+
+    def show_initial_instructions_dialog(self, callback):
+        """Show initial registration instructions"""
+        dialog = tk.Toplevel()
+        dialog.title("Registration Instructions")
+        dialog.geometry("500x400")
+        dialog.transient()
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.geometry("+%d+%d" % (
+            (dialog.winfo_screenwidth() // 2) - 250,
+            (dialog.winfo_screenheight() // 2) - 200
+        ))
+        
+        # Instructions text
+        instructions = """Enhanced Registration Process (20 repetitions in 4 phases)
+
+For optimal recognition results:
+
+1. Keep your hand INSIDE the blue box at all times
+2. Follow the phase-specific instructions
+3. Maintain consistent gesture core while following tilt instructions
+4. Each phase has 5 repetitions (5 seconds each)
+
+The system will guide you through each phase.
+
+NOTE: Registration will pause if no hand is detected for 3 seconds.
+
+Click OK when ready to begin!"""
+        
+        text_widget = tk.Text(dialog, wrap=tk.WORD, font=("Arial", 12), padx=20, pady=20)
+        text_widget.insert(tk.END, instructions)
+        text_widget.config(state=tk.DISABLED)
+        text_widget.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+        
+        # OK button
+        ok_button = tk.Button(dialog, text="OK - Start Registration", command=lambda: [dialog.destroy(), callback()],
+                             font=("Arial", 12), bg="#4CAF50", fg="white", padx=30, pady=10)
+        ok_button.pack(pady=20)
+        
+        # Handle window close
+        dialog.protocol("WM_DELETE_WINDOW", lambda: [dialog.destroy(), callback()])
+
+    def show_phase_instruction_dialog(self, phase, callback):
+        """Show phase-specific instruction dialog"""
+        dialog = tk.Toplevel()
+        dialog.title(f"Phase {phase} Instructions")
+        dialog.geometry("450x300")
+        dialog.transient()
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.geometry("+%d+%d" % (
+            (dialog.winfo_screenwidth() // 2) - 225,
+            (dialog.winfo_screenheight() // 2) - 150
+        ))
+        
+        # Phase instructions
+        instruction_text = self.get_detailed_phase_instruction(phase)
+        
+        text_widget = tk.Text(dialog, wrap=tk.WORD, font=("Arial", 12), padx=15, pady=15)
+        text_widget.insert(tk.END, instruction_text)
+        text_widget.config(state=tk.DISABLED)
+        text_widget.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+        
+        # OK button
+        ok_button = tk.Button(dialog, text="OK - Continue", command=lambda: [dialog.destroy(), callback()],
+                             font=("Arial", 12), bg="#2196F3", fg="white", padx=30, pady=10)
+        ok_button.pack(pady=20)
+        
+        # Handle window close
+        dialog.protocol("WM_DELETE_WINDOW", lambda: [dialog.destroy(), callback()])
+
+    def _initialize_registration(self):
+        """Initialize registration after all prompts are done"""
         self.recording = True
         self.registration_paused = False
         self.no_hand_start_time = None
@@ -73,11 +162,39 @@ class TrainingManager:
         self.current_samples = []
         self.repetition_timer = time.time()
         self.countdown_seconds = 5
-        
-        # Show first phase instruction
-        messagebox.showinfo("Phase 1 Starting", self.get_detailed_phase_instruction(1))
-        
-        return f"Phase 1 - Repetition 1/{self.repetitions_per_phase}: Starting in {self.countdown_seconds} seconds..."
+        self.accumulated_pause_time = 0
+
+    def pause_for_prompt(self, reason):
+        """Pause registration for a prompt/dialog"""
+        if self.recording:
+            self.prompt_paused = True
+            self.pause_reason = reason
+            self.pause_start_time = time.time()
+            print(f"Registration paused for: {reason}")
+
+    def resume_from_prompt(self):
+        """Resume registration after prompt is dismissed"""
+        if self.prompt_paused and self.pause_start_time:
+            # Calculate how long we were paused
+            pause_duration = time.time() - self.pause_start_time
+            self.accumulated_pause_time += pause_duration
+            
+            # Adjust the repetition timer to account for pause time
+            self.repetition_timer += pause_duration
+            
+            self.prompt_paused = False
+            self.pause_reason = None
+            self.pause_start_time = None
+            print("Registration resumed after prompt")
+
+    def update_countdown(self):
+        """Update countdown timer"""
+        if self.recording and not self.registration_paused and not self.prompt_paused:
+            current_time = time.time()
+            elapsed_time = current_time - self.repetition_timer
+            self.countdown_seconds = max(0, 5 - int(elapsed_time))
+            return True
+        return False
 
     def check_hand_presence(self, landmarks):
         """Check if hand is present and handle pausing logic"""
@@ -94,7 +211,7 @@ class TrainingManager:
         else:  # No hand detected
             if self.no_hand_start_time is None:
                 self.no_hand_start_time = current_time
-            elif not self.registration_paused and (current_time - self.no_hand_start_time) >= self.pause_delay:
+            elif not self.registration_paused and not self.prompt_paused and (current_time - self.no_hand_start_time) >= self.pause_delay:
                 # Pause registration
                 self.registration_paused = True
                 self.show_pause_dialog()
@@ -166,10 +283,13 @@ class TrainingManager:
         # Check for hand presence and handle pausing
         self.check_hand_presence(landmarks)
         
-        # Don't process if paused
-        if self.registration_paused:
-            return "Registration Paused - Place hand in blue box"
-            
+        # Don't process if paused for any reason
+        if self.registration_paused or self.prompt_paused:
+            if self.registration_paused:
+                return "Registration Paused - Place hand in blue box"
+            elif self.prompt_paused:
+                return f"Registration Paused - {self.pause_reason}"
+        
         if self.recording and self.samples_count < self.total_repetitions:
             elapsed_time = current_time - self.repetition_timer
             
@@ -199,20 +319,18 @@ class TrainingManager:
                     # Check if we need to move to next phase
                     if self.samples_count % self.repetitions_per_phase == 0:
                         self.current_phase += 1
+                        
+                        # Pause for phase transition
+                        self.pause_for_prompt(f"phase_{self.current_phase}_transition")
+                        
+                        def on_phase_transition_ok():
+                            self.resume_from_prompt()
+                        
                         # Show phase transition dialog
-                        messagebox.showinfo(f"Phase {self.current_phase} Starting", 
-                                          self.get_detailed_phase_instruction(self.current_phase))
+                        self.show_phase_instruction_dialog(self.current_phase, on_phase_transition_ok)
                     
                     self.countdown_seconds = 5  # Reset countdown to 5 seconds
                     rep_in_phase = (self.samples_count % self.repetitions_per_phase) + 1
-                    
-                    # Give variation tips at specific points
-                    if self.samples_count == self.repetitions_per_phase:  # After phase 1
-                        messagebox.showinfo("Phase Transition", "Great! Now moving to Phase 2 with slight hand tilting.")
-                    elif self.samples_count == self.repetitions_per_phase * 2:  # After phase 2
-                        messagebox.showinfo("Phase Transition", "Excellent! Return to your original position for Phase 3.")
-                    elif self.samples_count == self.repetitions_per_phase * 3:  # After phase 3
-                        messagebox.showinfo("Phase Transition", "Almost done! Final phase with tilted position.")
                     
                     return f"Phase {self.current_phase} - Repetition {rep_in_phase}/{self.repetitions_per_phase}: {self.countdown_seconds} seconds remaining..."
                         
@@ -220,6 +338,8 @@ class TrainingManager:
                     # Registration complete
                     self.save_user_data()
                     self.stop_registration()
+                    
+                    # Show completion dialog
                     messagebox.showinfo("Registration Complete", 
                                       f"Registration successful!\n\n" +
                                       f"Completed all 4 phases with {len(self.current_samples)} total samples.\n" +
@@ -227,25 +347,6 @@ class TrainingManager:
                     return "Registration Complete!"
         
         return ""
-
-    def update_countdown(self):
-        """Update countdown timer"""
-        if self.recording and not self.registration_paused:
-            current_time = time.time()
-            elapsed_time = current_time - self.repetition_timer
-            self.countdown_seconds = max(0, 5 - int(elapsed_time))
-            return True
-        return False
-
-    def get_status_message(self):
-        """Get current status message for UI"""
-        if not self.recording:
-            return "Ready for registration"
-        elif self.registration_paused:
-            return "Registration Paused - Place hand in blue box"
-        else:
-            rep_in_phase = (self.samples_count % self.repetitions_per_phase) + 1
-            return f"Phase {self.current_phase}/4 - Rep {rep_in_phase}/{self.repetitions_per_phase}"
 
     def save_user_data(self):
         """Save collected samples to database"""
@@ -266,9 +367,12 @@ class TrainingManager:
         """Stop the registration process"""
         self.recording = False
         self.registration_paused = False
+        self.prompt_paused = False
         self.current_samples = []
         self.samples_count = 0
         self.current_phase = 1
+        self.accumulated_pause_time = 0
+        
         if self.pause_dialog:
             self.pause_dialog.destroy()
             self.pause_dialog = None
@@ -289,3 +393,19 @@ class TrainingManager:
             self.stop_registration()
             return True
         return False
+
+    def get_status_message(self):
+        """Get current status message for UI"""
+        if not self.recording:
+            return "Ready for registration"
+        elif self.prompt_paused:
+            return f"Registration Paused - {self.pause_reason}"
+        elif self.registration_paused:
+            return "Registration Paused - Place hand in blue box"
+        else:
+            rep_in_phase = (self.samples_count % self.repetitions_per_phase) + 1
+            return f"Phase {self.current_phase}/4 - Rep {rep_in_phase}/{self.repetitions_per_phase}"
+
+    def is_paused(self):
+        """Check if registration is currently paused"""
+        return self.registration_paused or self.prompt_paused
