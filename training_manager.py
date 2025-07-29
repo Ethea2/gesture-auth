@@ -83,41 +83,51 @@ class TrainingManager:
         """Show initial registration instructions"""
         dialog = tk.Toplevel()
         dialog.title("Registration Instructions")
-        dialog.geometry("500x400")
+        dialog.geometry("500x450")  # Increased height to accommodate button
         dialog.transient()
         dialog.grab_set()
+        dialog.resizable(False, False)  # Prevent resizing to maintain layout
         
         # Center the dialog
         dialog.geometry("+%d+%d" % (
             (dialog.winfo_screenwidth() // 2) - 250,
-            (dialog.winfo_screenheight() // 2) - 200
+            (dialog.winfo_screenheight() // 2) - 225
         ))
         
         # Instructions text
         instructions = """Enhanced Registration Process (20 repetitions in 4 phases)
 
-For optimal recognition results:
+    For optimal recognition results:
 
-1. Keep your hand INSIDE the blue box at all times
-2. Follow the phase-specific instructions
-3. Maintain consistent gesture core while following tilt instructions
-4. Each phase has 5 repetitions (5 seconds each)
+    1. Keep your hand INSIDE the blue box at all times
+    2. Follow the phase-specific instructions
+    3. Maintain consistent gesture core while following tilt instructions
+    4. Each phase has 5 repetitions (5 seconds each)
 
-The system will guide you through each phase.
+    The system will guide you through each phase.
 
-NOTE: Registration will pause if no hand is detected for 3 seconds.
+    NOTE: Registration will pause if no hand is detected for 3 seconds.
 
-Click OK when ready to begin!"""
+    Click OK when ready to begin!"""
         
-        text_widget = tk.Text(dialog, wrap=tk.WORD, font=("Arial", 12), padx=20, pady=20)
+        # Text frame with fixed height
+        text_frame = tk.Frame(dialog)
+        text_frame.pack(fill=tk.BOTH, padx=20, pady=(20, 10), expand=True)
+        
+        text_widget = tk.Text(text_frame, wrap=tk.WORD, font=("Arial", 12), height=15)
         text_widget.insert(tk.END, instructions)
         text_widget.config(state=tk.DISABLED)
-        text_widget.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        
+        # Button frame at bottom - fixed position
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(fill=tk.X, padx=20, pady=(10, 20))
         
         # OK button
-        ok_button = tk.Button(dialog, text="OK - Start Registration", command=lambda: [dialog.destroy(), callback()],
-                             font=("Arial", 12), bg="#4CAF50", fg="white", padx=30, pady=10)
-        ok_button.pack(pady=20)
+        ok_button = tk.Button(button_frame, text="OK - Start Registration", 
+                            command=lambda: [dialog.destroy(), callback()],
+                            font=("Arial", 12), bg="#4CAF50", fg="white", padx=30, pady=10)
+        ok_button.pack(pady=10)
         
         # Handle window close
         dialog.protocol("WM_DELETE_WINDOW", lambda: [dialog.destroy(), callback()])
@@ -126,28 +136,38 @@ Click OK when ready to begin!"""
         """Show phase-specific instruction dialog"""
         dialog = tk.Toplevel()
         dialog.title(f"Phase {phase} Instructions")
-        dialog.geometry("450x300")
+        dialog.geometry("450x350")  # Increased height
         dialog.transient()
         dialog.grab_set()
+        dialog.resizable(False, False)  # Prevent resizing
         
         # Center the dialog
         dialog.geometry("+%d+%d" % (
             (dialog.winfo_screenwidth() // 2) - 225,
-            (dialog.winfo_screenheight() // 2) - 150
+            (dialog.winfo_screenheight() // 2) - 175
         ))
         
         # Phase instructions
         instruction_text = self.get_detailed_phase_instruction(phase)
         
-        text_widget = tk.Text(dialog, wrap=tk.WORD, font=("Arial", 12), padx=15, pady=15)
+        # Text frame with controlled height
+        text_frame = tk.Frame(dialog)
+        text_frame.pack(fill=tk.BOTH, padx=20, pady=(20, 10), expand=True)
+        
+        text_widget = tk.Text(text_frame, wrap=tk.WORD, font=("Arial", 12), height=10)
         text_widget.insert(tk.END, instruction_text)
         text_widget.config(state=tk.DISABLED)
-        text_widget.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        
+        # Button frame at bottom - fixed position
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(fill=tk.X, padx=20, pady=(10, 20))
         
         # OK button
-        ok_button = tk.Button(dialog, text="OK - Continue", command=lambda: [dialog.destroy(), callback()],
-                             font=("Arial", 12), bg="#2196F3", fg="white", padx=30, pady=10)
-        ok_button.pack(pady=20)
+        ok_button = tk.Button(button_frame, text="OK - Continue", 
+                            command=lambda: [dialog.destroy(), callback()],
+                            font=("Arial", 12), bg="#2196F3", fg="white", padx=30, pady=10)
+        ok_button.pack(pady=10)
         
         # Handle window close
         dialog.protocol("WM_DELETE_WINDOW", lambda: [dialog.destroy(), callback()])
@@ -223,32 +243,39 @@ Click OK when ready to begin!"""
             
         self.pause_dialog = tk.Toplevel()
         self.pause_dialog.title("Registration Paused")
-        self.pause_dialog.geometry("400x200")
+        self.pause_dialog.geometry("400x250")  # Increased height
         self.pause_dialog.transient()
         self.pause_dialog.grab_set()
+        self.pause_dialog.resizable(False, False)  # Prevent resizing
         
-        # Message
+        # Center the dialog
+        self.pause_dialog.geometry("+%d+%d" % (
+            (self.pause_dialog.winfo_screenwidth() // 2) - 200,
+            (self.pause_dialog.winfo_screenheight() // 2) - 125
+        ))
+        
+        # Message frame - fixed height
         message_frame = tk.Frame(self.pause_dialog)
-        message_frame.pack(pady=20, padx=20, fill=tk.BOTH, expand=True)
+        message_frame.pack(fill=tk.BOTH, pady=20, padx=20, expand=True)
         
         icon_label = tk.Label(message_frame, text="⚠️", font=("Arial", 24))
         icon_label.pack()
         
         title_label = tk.Label(message_frame, text="Registration Paused", 
-                              font=("Arial", 14, "bold"))
+                            font=("Arial", 14, "bold"))
         title_label.pack(pady=(10, 5))
         
         message_label = tk.Label(message_frame, 
                                 text="No hand detected in the blue box for 3 seconds.\n\n" +
-                                     "Place your hand in the blue detection box to continue\n" +
-                                     "or choose an option below:",
+                                    "Place your hand in the blue detection box to continue\n" +
+                                    "or choose an option below:",
                                 font=("Arial", 11),
                                 justify=tk.CENTER)
         message_label.pack(pady=10)
         
-        # Buttons
+        # Button frame at bottom - fixed position
         button_frame = tk.Frame(self.pause_dialog)
-        button_frame.pack(pady=20, padx=20, fill=tk.X)
+        button_frame.pack(fill=tk.X, pady=(10, 20), padx=20)
         
         def continue_registration():
             self.registration_paused = False
@@ -262,15 +289,15 @@ Click OK when ready to begin!"""
             self.pause_dialog = None
             
         continue_btn = tk.Button(button_frame, text="Continue Registration", 
-                               command=continue_registration,
-                               font=("Arial", 11), bg="#4CAF50", fg="white", 
-                               padx=20, pady=5)
+                            command=continue_registration,
+                            font=("Arial", 11), bg="#4CAF50", fg="white", 
+                            padx=20, pady=5)
         continue_btn.pack(side=tk.LEFT, padx=(0, 10), fill=tk.X, expand=True)
         
         cancel_btn = tk.Button(button_frame, text="Cancel Registration", 
-                             command=cancel_registration,
-                             font=("Arial", 11), bg="#f44336", fg="white", 
-                             padx=20, pady=5)
+                            command=cancel_registration,
+                            font=("Arial", 11), bg="#f44336", fg="white", 
+                            padx=20, pady=5)
         cancel_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         # Handle window close
@@ -335,6 +362,8 @@ Click OK when ready to begin!"""
                     return f"Phase {self.current_phase} - Repetition {rep_in_phase}/{self.repetitions_per_phase}: {self.countdown_seconds} seconds remaining..."
                         
                 else:
+                    
+                    total_samples_collected = len(self.current_samples)
                     # Registration complete
                     self.save_user_data()
                     self.stop_registration()
@@ -342,7 +371,7 @@ Click OK when ready to begin!"""
                     # Show completion dialog
                     messagebox.showinfo("Registration Complete", 
                                       f"Registration successful!\n\n" +
-                                      f"Completed all 4 phases with {len(self.current_samples)} total samples.\n" +
+                                      f"Completed all 4 phases with {total_samples_collected} total samples.\n" +
                                       f"Your gesture recognition model has been updated.")
                     return "Registration Complete!"
         
